@@ -1,0 +1,13 @@
+{
+  "name": "claude-code-status-card",
+  "version": "1.0.0",
+  "description": "Always-on-top mini widget that shows live Claude Code session status (thinking / running tool / needs approval) via Claude Code hooks.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

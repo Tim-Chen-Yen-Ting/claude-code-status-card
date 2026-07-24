@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs UserPromptSubmit" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs PreToolUse" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs PostToolUse" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs Notification" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs Stop" } ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs SubagentStop" } ] }
+    ]
+  }
+}

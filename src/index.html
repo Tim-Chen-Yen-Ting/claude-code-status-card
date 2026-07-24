@@ -1,0 +1,314 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body {
+    margin: 0; padding: 0; background: transparent; overflow: hidden;
+    font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  #container {
+    width: 240px; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 4px;
+    max-height: 100vh;
+    overflow-y: auto;
+  }
+  #container::-webkit-scrollbar { width: 0; }
+  .card {
+    position: relative;
+    box-sizing: border-box;
+    border-radius: 16px; padding: 10px 12px;
+    background: rgba(28,28,32,0.92);
+    color: #eee;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    display: flex; flex-direction: column; justify-content: center; gap: 6px;
+    transition: background 0.25s, box-shadow 0.25s, opacity 0.4s;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .card.needs-approval {
+    background: rgba(120,20,20,0.95);
+    box-shadow: 0 0 0 2px rgba(255,80,80,0.8), 0 4px 24px rgba(0,0,0,0.5);
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(255,80,80,0.9), 0 4px 24px rgba(0,0,0,0.5); }
+    50% { box-shadow: 0 0 0 6px rgba(255,80,80,0.3), 0 4px 24px rgba(0,0,0,0.5); }
+  }
+  .row { display: flex; align-items: flex-start; gap: 11px; }
+  .repoicon { flex: 0 0 auto; width: 30px; height: 30px; margin-top: 1px; }
+  .repoicon svg { width: 30px; height: 30px; display: block; }
+  .body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .status { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 700; line-height: 1; }
+  .status.working { color: #3b82f6; }
+  .status.approval { color: #ef4444; }
+  .status.done { color: #22c55e; }
+  .ind { width: 15px; height: 15px; flex: 0 0 auto; display: block; }
+  .spinner {
+    width: 14px; height: 14px; box-sizing: border-box;
+    border: 2px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .name {
+    font-size: 13px; color: #eee; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cwd {
+    font-size: 11px; color: #8a8a8a;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .close {
+    position: absolute; top: 6px; right: 8px;
+    width: 16px; height: 16px; line-height: 15px; text-align: center;
+    border-radius: 50%; font-size: 12px; color: #ccc;
+    background: rgba(255,255,255,0.08);
+    cursor: pointer; opacity: 0.55;
+  }
+  .close:hover { opacity: 1; background: rgba(255,80,80,0.85); color: #fff; }
+  #empty {
+    position: relative;
+    box-sizing: border-box;
+    border-radius: 16px; padding: 14px 12px;
+    background: rgba(28,28,32,0.92);
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    font-size: 11px; color: #999; text-align: center;
+  }
+  #quit {
+    position: absolute; top: 6px; right: 8px;
+    width: 16px; height: 16px; line-height: 15px; text-align: center;
+    border-radius: 50%; font-size: 12px; color: #ccc;
+    background: rgba(255,255,255,0.08);
+    cursor: pointer; opacity: 0.55;
+  }
+  #quit:hover { opacity: 1; background: rgba(255,80,80,0.85); color: #fff; }
+</style>
+</head>
+<body>
+  <div id="container">
+    <div id="empty"><span id="quit" title="Quit widget">⏻</span>Idle — no active sessions</div>
+  </div>
+
+<script>
+  const container = document.getElementById("container");
+  const emptyEl = document.getElementById("empty");
+
+  // Retire a session's card this long after it reports Stop, unless it
+  // emits a new event first (e.g. the next prompt in the same session).
+  const RETIRE_AFTER_MS = 5 * 60 * 1000;
+
+  // A tool that needs approval fires PreToolUse but no PostToolUse until you
+  // approve. Claude Code's Notification hook often doesn't fire for these,
+  // so if a "Running tool" card sees no follow-up event within this window,
+  // we escalate it to the red "Needs you?" state. Normal tools complete in
+  // a few hundred ms, so this rarely false-positives (a genuinely slow tool
+  // will show it too — which is also worth a glance).
+  const APPROVAL_HINT_MS = 3000;
+
+  // session_id -> { cwd, kind, label, detail, ts, retireAt }
+  const sessions = new Map();
+  // session_id -> timeout id for the pending approval-hint escalation
+  const hintTimers = new Map();
+
+  function clearHint(key) {
+    const t = hintTimers.get(key);
+    if (t) { clearTimeout(t); hintTimers.delete(key); }
+  }
+
+  function escalateToApproval(key) {
+    hintTimers.delete(key);
+    const s = sessions.get(key);
+    if (!s || s.kind !== "tool") return; // a later event already moved it on
+    s.kind = "approval";
+    s.label = "Needs you?";
+    s.detail = "Waiting to run " + (s.detail || "a tool");
+    render();
+  }
+
+  function sessionKey(ev) {
+    return ev.session_id || `cwd:${ev.cwd || "unknown"}`;
+  }
+
+  // --- Repository icons ---------------------------------------------------
+  // Icons represent repositories, not sessions: the same repo path always
+  // maps to the same icon (and colour) via a deterministic hash, so it's
+  // stable across restarts. Sessions in the same repo share an icon.
+  const ICON_NAMES = Object.keys(window.pip.icons || {}).sort();
+
+  function hashStr(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  // Normalize the repo key before hashing so the icon/colour never changes
+  // for the same repo. Claude Code reports the drive letter with inconsistent
+  // case (d:/… vs D:/…), and hashing the raw string would flip the icon/hue
+  // between events. Lowercasing pins it.
+  function repoKey(repo) {
+    return (repo || "?").toLowerCase();
+  }
+  function iconSvgFor(repo) {
+    if (!ICON_NAMES.length) {
+      return '<svg class="ind" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="currentColor"/></svg>';
+    }
+    const name = ICON_NAMES[hashStr("icon:" + repoKey(repo)) % ICON_NAMES.length];
+    return window.pip.icons[name];
+  }
+  function iconColorFor(repo) {
+    // Deterministic per-repo hue at high lightness so it always reads clearly
+    // on the dark card (never dark/gray/black).
+    return `hsl(${hashStr("hue:" + repoKey(repo)) % 360} 60% 72%)`;
+  }
+
+  // --- Status indicator (three visible states) ----------------------------
+  const CHECK_SVG = '<svg class="ind" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4 10-11"/></svg>';
+  const BANG_SVG = '<svg class="ind" viewBox="0 0 24 24"><g fill="currentColor"><rect x="6" y="4" width="3" height="10" rx="1.5"/><circle cx="7.5" cy="18.5" r="1.8"/><rect x="15" y="4" width="3" height="10" rx="1.5"/><circle cx="16.5" cy="18.5" r="1.8"/></g></svg>';
+  const SPINNER = '<span class="spinner"></span>';
+
+  function statusFor(kind) {
+    if (kind === "approval") return { cls: "approval", label: "Needs Approval", ind: BANG_SVG };
+    if (kind === "done") return { cls: "done", label: "Done", ind: CHECK_SVG };
+    return { cls: "working", label: "Working", ind: SPINNER }; // working + tool
+  }
+
+  function applyEvent(ev) {
+    const key = sessionKey(ev);
+    // Any new event for this session means it's no longer stuck waiting, so
+    // cancel a pending approval-hint escalation.
+    clearHint(key);
+    const existing = sessions.get(key) || {};
+    const cwd = ev.cwd || existing.cwd || "";
+    // Use the latest prompt as the session's display name — refreshes each
+    // turn so the card reflects what the thread is doing right now.
+    const name = ev.prompt || existing.name || "";
+    const base = { cwd, name, ts: ev.ts };
+
+    switch (ev.event) {
+      case "UserPromptSubmit":
+        sessions.set(key, { ...base, kind: "working", label: "Thinking…", detail: "", retireAt: null });
+        break;
+      case "PreToolUse":
+        sessions.set(key, { ...base, kind: "tool", label: "Running tool", detail: ev.tool_name || "", retireAt: null });
+        // If no follow-up arrives soon, assume it's blocked on approval.
+        hintTimers.set(key, setTimeout(() => escalateToApproval(key), APPROVAL_HINT_MS));
+        break;
+      case "PostToolUse":
+        sessions.set(key, { ...base, kind: "working", label: "Thinking…", detail: (ev.tool_name || "") + " done", retireAt: null });
+        break;
+      case "Notification":
+        sessions.set(key, { ...base, kind: "approval", label: "Needs you!", detail: ev.message || "Approval required", retireAt: null });
+        break;
+      case "Stop":
+      case "SubagentStop":
+        sessions.set(key, { ...base, kind: "done", label: "Done", detail: "Waiting for next message", retireAt: Date.now() + RETIRE_AFTER_MS });
+        break;
+      default:
+        return;
+    }
+  }
+
+  function render() {
+    // Drop any session whose retirement time has passed.
+    const now = Date.now();
+    for (const [key, s] of sessions) {
+      if (s.retireAt && s.retireAt <= now) sessions.delete(key);
+    }
+
+    container.querySelectorAll(".card").forEach((el) => el.remove());
+
+    if (sessions.size === 0) {
+      emptyEl.style.display = "block";
+      return;
+    }
+    emptyEl.style.display = "none";
+
+    const esc = (t) => String(t || "").replace(/[&<>"]/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const rows = [...sessions.entries()].sort((a, b) => (a[1].ts < b[1].ts ? 1 : -1));
+    for (const [key, s] of rows) {
+      const card = document.createElement("div");
+      card.className = "card" + (s.kind === "approval" ? " needs-approval" : "");
+      card.dataset.key = key;
+      const st = statusFor(s.kind);
+      const repoName = (s.cwd || "").split("/").filter(Boolean).pop() || "";
+      const nameLine = s.name ? `<div class="name" title="${esc(s.name)}">${esc(s.name)}</div>` : "";
+      card.innerHTML = `
+        <div class="close" title="Remove from widget">✕</div>
+        <div class="row">
+          <div class="repoicon" style="color:${iconColorFor(s.cwd)}">${iconSvgFor(s.cwd)}</div>
+          <div class="body">
+            <div class="status ${st.cls}">${st.ind}<span>${st.label}</span></div>
+            ${nameLine}
+            <div class="cwd">${esc(repoName)}</div>
+          </div>
+        </div>
+      `;
+      container.appendChild(card);
+    }
+
+    // Ask the main process to size the window to fit the cards.
+    requestAnimationFrame(() => {
+      const h = Math.ceil(container.scrollHeight);
+      if (window.pip.resize) window.pip.resize(h);
+    });
+  }
+
+  window.pip.onEvents((events) => {
+    events.forEach(applyEvent);
+    render();
+  });
+
+  // Tray → "Clear all cards": wipe the in-memory session list.
+  window.pip.onClear(() => {
+    hintTimers.forEach((t) => clearTimeout(t));
+    hintTimers.clear();
+    sessions.clear();
+    render();
+  });
+
+  // Sweep for retirements even when no new events arrive.
+  setInterval(render, 30 * 1000);
+
+  render();
+
+  // Click the ✕ to drop a session's card from the widget.
+  container.addEventListener("click", (e) => {
+    const btn = e.target.closest(".close");
+    if (!btn) return;
+    const card = btn.closest(".card");
+    if (card && card.dataset.key) {
+      clearHint(card.dataset.key);
+      sessions.delete(card.dataset.key);
+      render();
+    }
+  });
+
+  // Idle-pill quit button.
+  const quitBtn = document.getElementById("quit");
+  if (quitBtn) quitBtn.addEventListener("click", (e) => { e.stopPropagation(); window.pip.quit(); });
+
+  // Right-click anywhere on the widget for the full menu (Clear all, Quit, …),
+  // so the app is always controllable from the window, not just the tray icon.
+  window.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    window.pip.showMenu();
+  });
+
+  // Drag the frameless window from anywhere in the container.
+  let dragging = false, lastX = 0, lastY = 0;
+  container.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".close") || e.target.closest("#quit")) return; // don't drag on buttons
+    dragging = true; lastX = e.screenX; lastY = e.screenY;
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const dx = e.screenX - lastX, dy = e.screenY - lastY;
+    lastX = e.screenX; lastY = e.screenY;
+    window.pip.drag(dx, dy);
+  });
+  window.addEventListener("mouseup", () => (dragging = false));
+</script>
+</body>
+</html>
