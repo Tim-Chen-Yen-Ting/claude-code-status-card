@@ -101,11 +101,81 @@
 
   // A tool that needs approval fires PreToolUse but no PostToolUse until you
   // approve. Claude Code's Notification hook often doesn't fire for these,
-  // so if a "Running tool" card sees no follow-up event within this window,
-  // we escalate it to the red "Needs you?" state. Normal tools complete in
-  // a few hundred ms, so this rarely false-positives (a genuinely slow tool
-  // will show it too — which is also worth a glance).
-  const APPROVAL_HINT_MS = 3000;
+  // so if a "Running tool" card sees no follow-up event within a window, we
+  // escalate it to the red "Needs you?" state. Per Claude Code's permission
+  // docs (code.claude.com/docs/en/permissions,
+  // code.claude.com/docs/en/tools-reference), Bash and WebSearch are the
+  // tools that actually re-prompt often: Bash approval is remembered
+  // permanently per repo+exact command (so any new command re-asks), and
+  // WebSearch has no session-level "always allow" at all, so it can prompt
+  // on nearly every call. Edit/Write/NotebookEdit approval, by contrast,
+  // lasts until session end (so only the first one in a session can be
+  // gated) and WebFetch only prompts on the first hit to a new domain — both
+  // routinely take longer than a few seconds on big files/pages without ever
+  // needing approval again. So Bash/WebSearch get a short fuse and
+  // everything else a long one, instead of one threshold that either
+  // false-positives on slow edits or is too slow to catch a real prompt.
+  //
+  // The Bash/WebSearch fuse can't be too short, though: every hook spawns a
+  // fresh `node hook-relay.cjs` process, and there's a PreToolUse -> tool
+  // runs -> PostToolUse round-trip through Claude Code itself in between.
+  // On Windows, cold Node process-spawn overhead alone can eat well past a
+  // second, especially under load (several hooks firing back to back) —
+  // observed false-positiving an auto-approved, no-prompt `ls` at 1500ms.
+  // 3500ms gives headroom against that while still being much faster than
+  // the 15s default.
+  const APPROVAL_HINT_MS_BY_TOOL = { Bash: 3500, WebSearch: 3500 };
+  const APPROVAL_HINT_MS_DEFAULT = 15000;
+  function approvalHintMsFor(toolName) {
+    return APPROVAL_HINT_MS_BY_TOOL[toolName] ?? APPROVAL_HINT_MS_DEFAULT;
+  }
+
+  // --- Known-safe Bash commands (skip the approval-hint timer entirely) --
+  // Claude Code recognizes a fixed, undocumented-as-configurable set of
+  // read-only Bash commands and runs them without ever prompting, in every
+  // permission mode (code.claude.com/docs/en/permissions#read-only-commands).
+  // For a command we can positively identify as being in that set, there is
+  // no approval to wait for, so we skip setting a hint timer at all instead
+  // of guessing a timeout — eliminating false-positive red flashes for
+  // ordinary lookups like `ls`/`cat`/`pwd` regardless of how slow the hook
+  // round-trip happens to be.
+  //
+  // This match is deliberately conservative: Claude Code's real analysis
+  // handles glob expansion, compound commands, and per-command exceptions
+  // (see the docs link above) that we can't fully reproduce from a command
+  // string alone. So this only fires for the simple, unambiguous case — a
+  // single invocation, no chaining/substitution/redirection, no glob
+  // characters, and a leading command word in the fixed list below. `git`
+  // and `find` are deliberately excluded even though the docs list them as
+  // usually-read-only: a `git` invocation's read-only-ness depends on the
+  // subcommand, and `find` has destructive flags (`-delete`, `-exec`) that
+  // make it non-read-only with no glob involved at all — both too easy to
+  // get wrong from a command string alone. Anything not confidently matched
+  // falls back to the normal per-tool timer above, same as before this
+  // existed — so the failure mode for a command we're unsure about is
+  // "waits a bit longer to flag", never "silently never flags".
+  const READ_ONLY_BASH_COMMANDS = new Set([
+    "ls", "cat", "echo", "pwd", "head", "tail", "grep", "wc", "which", "diff", "stat", "du", "cd",
+  ]);
+  // Chaining (&&, ||, ;, |), command substitution ($(...), `...`), and
+  // redirection (>, <) all make a "simple single command" analysis
+  // unreliable, so any of these bails out to the normal timer.
+  const BASH_COMPLEXITY_RE = /&&|\|\||[|;`]|\$\(|[<>]/;
+  // Unquoted glob metacharacters — even for commands in the safe list, Claude
+  // Code's own doc calls out that a glob is only skipped when every flag is
+  // read-only, which we can't verify; treat any glob as "not simple".
+  const BASH_GLOB_RE = /[*?[]/;
+  function isKnownReadOnlyBash(command) {
+    if (!command || typeof command !== "string") return false;
+    const trimmed = command.trim();
+    if (!trimmed || BASH_COMPLEXITY_RE.test(trimmed) || BASH_GLOB_RE.test(trimmed)) return false;
+    const tokens = trimmed.split(/\s+/);
+    // Skip leading env-var assignments, e.g. `FOO=bar ls`.
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+    const lead = tokens[i];
+    return !!lead && READ_ONLY_BASH_COMMANDS.has(lead);
+  }
 
   // session_id -> { cwd, kind, label, detail, ts, retireAt }
   const sessions = new Map();
@@ -191,8 +261,12 @@
         break;
       case "PreToolUse":
         sessions.set(key, { ...base, kind: "tool", label: "Running tool", detail: ev.tool_name || "", retireAt: null });
-        // If no follow-up arrives soon, assume it's blocked on approval.
-        hintTimers.set(key, setTimeout(() => escalateToApproval(key), APPROVAL_HINT_MS));
+        // Known-safe Bash commands never prompt, so there's no approval to
+        // wait for — skip the hint timer instead of guessing a timeout.
+        if (ev.tool_name !== "Bash" || !isKnownReadOnlyBash(ev.command)) {
+          // If no follow-up arrives soon, assume it's blocked on approval.
+          hintTimers.set(key, setTimeout(() => escalateToApproval(key), approvalHintMsFor(ev.tool_name)));
+        }
         break;
       case "PostToolUse":
         sessions.set(key, { ...base, kind: "working", label: "Thinking…", detail: (ev.tool_name || "") + " done", retireAt: null });

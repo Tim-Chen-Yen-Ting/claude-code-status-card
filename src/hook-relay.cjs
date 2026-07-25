@@ -28,7 +28,14 @@ function readStdin() {
 function shortCwd(cwd) {
   if (!cwd) return "";
   const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts.slice(-2).join("/");
+  // Anchor on the *first* two segments (drive + top-level repo folder), not
+  // the last two: the hook payload's cwd can point at a subdirectory the
+  // assistant is currently editing in, which changes depth turn to turn.
+  // Taking the last two segments in that case grabs "subfolder/repo" instead
+  // of "drive/repo" — a different string that hashes to a different icon,
+  // even though it's the same repo. The first two segments stay put
+  // regardless of how deep a tool call operates.
+  return parts.slice(0, 2).join("/");
 }
 
 // Claude Code injects context blocks (e.g. <ide_opened_file>…</ide_opened_file>,
@@ -67,6 +74,15 @@ function cleanPrompt(p) {
     // Prompt text (context blocks stripped) — used by the widget as the
     // session's display name.
     prompt: cleanPrompt(payload.prompt),
+    // Bash command text (PreToolUse only) — lets the widget recognize
+    // Claude Code's own built-in read-only commands (ls, cat, pwd, …) and
+    // skip the approval-hint escalation for them, since those never
+    // actually prompt. Documented, stable field per
+    // code.claude.com/docs/en/hooks. Truncated: only used for a keyword
+    // check, never displayed.
+    command: payload.tool_input && typeof payload.tool_input.command === "string"
+      ? payload.tool_input.command.slice(0, 500)
+      : null,
   };
 
   try {
@@ -76,7 +92,15 @@ function cleanPrompt(p) {
     const lines = fs.readFileSync(EVENTS_FILE, "utf8").split("\n").filter(Boolean);
     if (lines.length > MAX_LINES) {
       const trimmed = lines.slice(lines.length - MAX_LINES).join("\n") + "\n";
-      fs.writeFileSync(EVENTS_FILE, trimmed);
+      // Write-then-rename instead of a direct writeFileSync: writeFileSync
+      // truncates the file before writing, so a widget poll landing in that
+      // gap sees a transient 0-byte file, misreads it as "already trimmed",
+      // and resets its read offset to 0 — replaying the whole (now rewritten)
+      // file as "new" on the next poll and resurrecting stale sessions.
+      // rename() is atomic, so readers only ever see the old or new content.
+      const tmpFile = EVENTS_FILE + ".tmp";
+      fs.writeFileSync(tmpFile, trimmed);
+      fs.renameSync(tmpFile, EVENTS_FILE);
     }
   } catch (_) {
     // Never let the relay fail the hook itself.

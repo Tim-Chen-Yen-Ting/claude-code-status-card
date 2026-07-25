@@ -8,7 +8,12 @@ const EVENTS_FILE = path.join(DATA_DIR, "events.ndjson");
 
 let win = null;
 let tray = null;
-let lastSize = 0;
+// Last-delivered event's `ts` (ISO string — sorts correctly lexically).
+// Not a byte offset: the relay's trim rewrites the whole file (drops the
+// oldest line, shifts everything), which would make any offset-based tail
+// invalid the moment a trim happens. Re-reading the whole (small, capped at
+// 500 lines) file each time and de-duping by ts is immune to that rewrite.
+let lastTs = null;
 
 const WIDTH = 240;
 const HEIGHT = 260;
@@ -73,30 +78,32 @@ function resetPosition() {
   win.setPosition(sw - WIDTH - 24, sh - HEIGHT - 24);
 }
 
-// Return only the lines appended since the last read. Tracking a byte
-// offset (not "last 50 lines") is critical: re-sending old history would
-// resurrect sessions the user dismissed with the ✕ button.
-function readNewEvents() {
+function readAllRecords() {
   try {
-    const stat = fs.statSync(EVENTS_FILE);
-    if (stat.size === lastSize) return [];
-    // File shrank — the relay trimmed it to the last 500 lines. Re-anchor
-    // to the new end and skip; we've already shown everything up to here.
-    if (stat.size < lastSize) { lastSize = stat.size; return []; }
-
-    const len = stat.size - lastSize;
-    const buf = Buffer.alloc(len);
-    const fd = fs.openSync(EVENTS_FILE, "r");
-    try { fs.readSync(fd, buf, 0, len, lastSize); }
-    finally { fs.closeSync(fd); }
-    lastSize = stat.size;
-
-    return buf.toString("utf8").split("\n").filter(Boolean).map((l) => {
+    const text = fs.readFileSync(EVENTS_FILE, "utf8");
+    return text.split("\n").filter(Boolean).map((l) => {
       try { return JSON.parse(l); } catch { return null; }
     }).filter(Boolean);
   } catch {
     return [];
   }
+}
+
+// Return only the records not yet delivered (ts > lastTs), and advance
+// lastTs to the newest one seen. Re-sending old history would resurrect
+// sessions the user dismissed with the ✕ button, so this must never go
+// backwards — but it also must survive the relay's trim rewriting the whole
+// file, which a byte-offset tail cannot (see the comment on `lastTs` above).
+function readNewEvents() {
+  const records = readAllRecords();
+  // lastTs === null only happens when the events file was empty at startup
+  // (fresh install) — treat that as "everything is new" rather than
+  // suppressing the very first batch.
+  const fresh = records.filter((r) => lastTs === null || r.ts > lastTs);
+  for (const r of records) {
+    if (lastTs === null || r.ts > lastTs) lastTs = r.ts;
+  }
+  return fresh;
 }
 
 function watchEvents() {
@@ -105,7 +112,8 @@ function watchEvents() {
 
   // Start from the current end of the file: only show sessions that are
   // active from now on, rather than replaying stale/ended sessions on boot.
-  try { lastSize = fs.statSync(EVENTS_FILE).size; } catch { lastSize = 0; }
+  const existing = readAllRecords();
+  lastTs = existing.length ? existing[existing.length - 1].ts : null;
 
   fs.watch(DATA_DIR, { persistent: true }, (evt, filename) => {
     if (!filename || !filename.includes("events.ndjson")) return;
