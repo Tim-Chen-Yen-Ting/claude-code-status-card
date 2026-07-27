@@ -27,26 +27,35 @@ function readStdin() {
 
 function shortCwd(cwd) {
   if (!cwd) return "";
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  // Anchor on the *first* two segments (drive + top-level repo folder), not
-  // the last two: the hook payload's cwd can point at a subdirectory the
-  // assistant is currently editing in, which changes depth turn to turn.
-  // Taking the last two segments in that case grabs "subfolder/repo" instead
-  // of "drive/repo" — a different string that hashes to a different icon,
-  // even though it's the same repo. The first two segments stay put
-  // regardless of how deep a tool call operates.
-  return parts.slice(0, 2).join("/");
+  // Just normalize slashes — no segment truncation. An earlier version
+  // anchored on the first two segments (drive + top-level folder) to dodge
+  // a hook payload cwd that can point at a subdirectory the assistant is
+  // currently working in, which changes depth turn to turn. That broke any
+  // repo not sitting directly at a drive root (e.g. `C:\Users\...\Projects\
+  // my-repo` truncated to `C:\Users`, never the actual repo name) — wrong
+  // for icon assignment, the .cwd label, and window-navigation matching
+  // alike. The real fix belongs in the renderer instead: pin each session to
+  // its first-ever reported cwd (see applyEvent in src/index.html) rather
+  // than truncating the path here at all.
+  return cwd.split(/[\\/]/).filter(Boolean).join("/");
 }
 
 // Claude Code injects context blocks (e.g. <ide_opened_file>…</ide_opened_file>,
 // <ide_selection>…, <system-reminder>…) into the prompt text before the user's
 // actual message. Strip them so the widget names the card after what the user
-// really typed, not the injected junk.
+// really typed, not the injected junk. <task-notification>…</task-notification>
+// is the harness's own synthetic UserPromptSubmit when a background
+// subagent/task finishes and control returns to you — not something you
+// typed, so it's stripped the same way. If the whole "prompt" turns out to
+// be nothing but wrapper tags, this returns null, and the widget keeps
+// showing the last real prompt as the card name instead of overwriting it
+// with the wrapper's raw text (see `existing.name` fallback in index.html).
 function cleanPrompt(p) {
   if (!p) return null;
   let s = String(p);
   s = s.replace(/<ide_[a-z_]*>[\s\S]*?<\/ide_[a-z_]*>/gi, " ");
   s = s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, " ");
+  s = s.replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, " ");
   s = s.replace(/\s+/g, " ").trim();
   return s ? s.slice(0, 80) : null;
 }

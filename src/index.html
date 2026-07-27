@@ -37,7 +37,8 @@
     50% { box-shadow: 0 0 0 6px rgba(255,80,80,0.3), 0 4px 24px rgba(0,0,0,0.5); }
   }
   .row { display: flex; align-items: flex-start; gap: 11px; }
-  .repoicon { flex: 0 0 auto; width: 30px; height: 30px; margin-top: 1px; }
+  .repoicon { flex: 0 0 auto; width: 30px; height: 30px; margin-top: 1px; cursor: pointer; border-radius: 8px; }
+  .repoicon:hover { background: rgba(255,255,255,0.12); }
   .repoicon svg { width: 30px; height: 30px; display: block; }
   .body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
   .status { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 700; line-height: 1; }
@@ -191,9 +192,11 @@
     hintTimers.delete(key);
     const s = sessions.get(key);
     if (!s || s.kind !== "tool") return; // a later event already moved it on
+    const prevKind = s.kind;
     s.kind = "approval";
     s.label = "Needs you?";
     s.detail = "Waiting to run " + (s.detail || "a tool");
+    playTransitionSound(prevKind, s.kind);
     render();
   }
 
@@ -202,34 +205,91 @@
   }
 
   // --- Repository icons ---------------------------------------------------
-  // Icons represent repositories, not sessions: the same repo path always
-  // maps to the same icon (and colour) via a deterministic hash, so it's
-  // stable across restarts. Sessions in the same repo share an icon.
+  // Icons represent repositories, not sessions: sessions in the same repo
+  // share an icon. Colour is still a deterministic hash of the repo path
+  // (stable, no persistence needed — collisions there are harmless since the
+  // repo-name label and icon shape already disambiguate).
+  //
+  // Icon *shape* assignment is sequential and persisted, not hashed: the
+  // first-seen repo gets icon 0, the second gets icon 1, and so on, wrapping
+  // only once every icon has been used at least once. That guarantees no two
+  // repos share an icon until the pool (one per file in assets/icons/) is
+  // exhausted, and even then a wrapped repo lands on the *first* icon in the
+  // cycle, never the one the immediately-preceding repo just got. A pure
+  // hash (the old scheme) couldn't promise that — two arbitrary repo paths
+  // had a real chance of hashing to the same icon well before the pool was
+  // full. The assignment is persisted to `~/.claude-status-card/icon-map.json`
+  // via preload.js, so it survives widget restarts, and hand-editing that
+  // file's `assignments` object is the manual-override entry point (pin a
+  // repo to a specific icon, or swap two repos' icons) — see the README.
   const ICON_NAMES = Object.keys(window.pip.icons || {}).sort();
+  const iconAssignments = { ...(window.pip.iconMap && window.pip.iconMap.assignments) };
+  let nextIconIndex = (window.pip.iconMap && window.pip.iconMap.nextIndex) || 0;
 
   function hashStr(s) {
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
     return h >>> 0;
   }
-  // Normalize the repo key before hashing so the icon/colour never changes
-  // for the same repo. Claude Code reports the drive letter with inconsistent
-  // case (d:/… vs D:/…), and hashing the raw string would flip the icon/hue
-  // between events. Lowercasing pins it.
+  // Normalize the repo key before hashing/assigning so the icon/colour never
+  // changes for the same repo. Claude Code reports the drive letter with
+  // inconsistent case (d:/… vs D:/…), and keying on the raw string would
+  // flip the icon/hue between events. Lowercasing pins it.
   function repoKey(repo) {
     return (repo || "?").toLowerCase();
   }
+  function iconNameFor(repo) {
+    if (!ICON_NAMES.length) return null;
+    const key = repoKey(repo);
+    if (iconAssignments[key]) return iconAssignments[key];
+    const name = ICON_NAMES[nextIconIndex % ICON_NAMES.length];
+    nextIconIndex++;
+    iconAssignments[key] = name;
+    if (window.pip.saveIconMap) {
+      window.pip.saveIconMap({ assignments: iconAssignments, nextIndex: nextIconIndex });
+    }
+    return name;
+  }
   function iconSvgFor(repo) {
-    if (!ICON_NAMES.length) {
+    const name = iconNameFor(repo);
+    if (!name) {
       return '<svg class="ind" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="currentColor"/></svg>';
     }
-    const name = ICON_NAMES[hashStr("icon:" + repoKey(repo)) % ICON_NAMES.length];
     return window.pip.icons[name];
   }
   function iconColorFor(repo) {
     // Deterministic per-repo hue at high lightness so it always reads clearly
     // on the dark card (never dark/gray/black).
     return `hsl(${hashStr("hue:" + repoKey(repo)) % 360} 60% 72%)`;
+  }
+
+  // --- Audio cues -----------------------------------------------------------
+  // Plays alongside the existing visual states, so a red/green card grabs
+  // attention even if you're not looking at the screen. Loaded once at
+  // startup; `.currentTime = 0` before each play lets a sound retrigger
+  // immediately even if the previous playback hasn't finished (e.g. two
+  // sessions finish back to back). `Audio.volume` defaults to 1.0, which is
+  // a multiplier *relative to* the system's current output level, not an
+  // absolute value — so this never assumes or overrides the user's actual
+  // volume (no surprise loud sounds in a quiet room).
+  const SOUND_APPROVAL = new Audio("../assets/sound/approval.mp3");
+  const SOUND_DONE = new Audio("../assets/sound/finish.mp3");
+  function playSound(audio) {
+    try {
+      audio.currentTime = 0;
+      // .play() rejects if the file is missing/unsupported (e.g.
+      // approval.mp3 not added yet) or on a transient autoplay restriction —
+      // never let that surface as an unhandled rejection or block rendering.
+      audio.play().catch(() => {});
+    } catch (_) {}
+  }
+  // Only on a genuine transition into approval/done (not a re-render of an
+  // already-approval/done card, and not any other transition) — otherwise
+  // e.g. the periodic retirement sweep or an unrelated event would replay it.
+  function playTransitionSound(prevKind, newKind) {
+    if (newKind === prevKind) return;
+    if (newKind === "approval") playSound(SOUND_APPROVAL);
+    else if (newKind === "done") playSound(SOUND_DONE);
   }
 
   // --- Status indicator (three visible states) ----------------------------
@@ -249,18 +309,25 @@
     // cancel a pending approval-hint escalation.
     clearHint(key);
     const existing = sessions.get(key) || {};
-    const cwd = ev.cwd || existing.cwd || "";
+    const prevKind = existing.kind;
+    // Pin to the session's first-ever reported cwd (typically from
+    // UserPromptSubmit, which is always the session's real root) rather
+    // than always taking the newest one — a later PreToolUse/PostToolUse can
+    // report a subdirectory the assistant is currently working in, which
+    // would otherwise silently drift the repo identity mid-session.
+    const cwd = existing.cwd || ev.cwd || "";
     // Use the latest prompt as the session's display name — refreshes each
     // turn so the card reflects what the thread is doing right now.
     const name = ev.prompt || existing.name || "";
     const base = { cwd, name, ts: ev.ts };
 
+    let newState;
     switch (ev.event) {
       case "UserPromptSubmit":
-        sessions.set(key, { ...base, kind: "working", label: "Thinking…", detail: "", retireAt: null });
+        newState = { ...base, kind: "working", label: "Thinking…", detail: "", retireAt: null };
         break;
       case "PreToolUse":
-        sessions.set(key, { ...base, kind: "tool", label: "Running tool", detail: ev.tool_name || "", retireAt: null });
+        newState = { ...base, kind: "tool", label: "Running tool", detail: ev.tool_name || "", retireAt: null };
         // Known-safe Bash commands never prompt, so there's no approval to
         // wait for — skip the hint timer instead of guessing a timeout.
         if (ev.tool_name !== "Bash" || !isKnownReadOnlyBash(ev.command)) {
@@ -269,18 +336,20 @@
         }
         break;
       case "PostToolUse":
-        sessions.set(key, { ...base, kind: "working", label: "Thinking…", detail: (ev.tool_name || "") + " done", retireAt: null });
+        newState = { ...base, kind: "working", label: "Thinking…", detail: (ev.tool_name || "") + " done", retireAt: null };
         break;
       case "Notification":
-        sessions.set(key, { ...base, kind: "approval", label: "Needs you!", detail: ev.message || "Approval required", retireAt: null });
+        newState = { ...base, kind: "approval", label: "Needs you!", detail: ev.message || "Approval required", retireAt: null };
         break;
       case "Stop":
       case "SubagentStop":
-        sessions.set(key, { ...base, kind: "done", label: "Done", detail: "Waiting for next message", retireAt: Date.now() + RETIRE_AFTER_MS });
+        newState = { ...base, kind: "done", label: "Done", detail: "Waiting for next message", retireAt: Date.now() + RETIRE_AFTER_MS };
         break;
       default:
         return;
     }
+    sessions.set(key, newState);
+    playTransitionSound(prevKind, newState.kind);
   }
 
   function render() {
@@ -307,11 +376,18 @@
       card.dataset.key = key;
       const st = statusFor(s.kind);
       const repoName = (s.cwd || "").split("/").filter(Boolean).pop() || "";
+      // Stashed for the click-to-focus handler below — same folder name
+      // shown in the .cwd label, used as the AppActivate match substring.
+      card.dataset.repoName = repoName;
+      // Full repo cwd, stashed on the card itself (not just the icon) so a
+      // right-click anywhere on the card — not only precisely on the small
+      // icon — can still resolve which repo's "Change icon" submenu to show.
+      card.dataset.repo = s.cwd || "";
       const nameLine = s.name ? `<div class="name" title="${esc(s.name)}">${esc(s.name)}</div>` : "";
       card.innerHTML = `
         <div class="close" title="Remove from widget">✕</div>
         <div class="row">
-          <div class="repoicon" style="color:${iconColorFor(s.cwd)}">${iconSvgFor(s.cwd)}</div>
+          <div class="repoicon" data-repo="${esc(s.cwd)}" style="color:${iconColorFor(s.cwd)}">${iconSvgFor(s.cwd)}</div>
           <div class="body">
             <div class="status ${st.cls}">${st.ind}<span>${st.label}</span></div>
             ${nameLine}
@@ -347,8 +423,32 @@
 
   render();
 
-  // Click the ✕ to drop a session's card from the widget.
+  // --- Icon override, via native menus (main.js) --------------------------
+  // Lets you override a repo's icon from the widget itself, instead of
+  // hand-editing icon-map.json. Both entry points pop up an actual OS
+  // context menu (built in main.js, since only the main process can call
+  // Menu.popup) rather than a custom in-page control:
+  //  - Left-click a card's icon: standalone icon-choice menu at the cursor.
+  //  - Right-click a card's icon: the full menu, with "Change icon" as a
+  //    nested submenu (only added when the click landed on an icon).
+  // Either way, choosing an entry fires "set-icon" back here, and this
+  // renderer — the sole writer of icon-map.json — applies and persists it.
+  window.pip.onSetIcon((repoKeyStr, name) => {
+    iconAssignments[repoKeyStr] = name;
+    if (window.pip.saveIconMap) {
+      window.pip.saveIconMap({ assignments: iconAssignments, nextIndex: nextIconIndex });
+    }
+    render();
+  });
+
+  // Click the ✕ to drop a session's card from the widget, or a card's icon
+  // to open the icon-choice menu for that repo.
   container.addEventListener("click", (e) => {
+    const iconEl = e.target.closest(".repoicon");
+    if (iconEl) {
+      window.pip.showIconMenu(repoKey(iconEl.dataset.repo));
+      return;
+    }
     const btn = e.target.closest(".close");
     if (!btn) return;
     const card = btn.closest(".card");
@@ -365,24 +465,53 @@
 
   // Right-click anywhere on the widget for the full menu (Clear all, Quit, …),
   // so the app is always controllable from the window, not just the tray icon.
+  // Right-clicking anywhere on a card — not just precisely on its small icon
+  // — also gets a "Change icon" submenu, so it's not a fiddly hit target.
   window.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    window.pip.showMenu();
+    const card = e.target.closest(".card");
+    const repo = card ? card.dataset.repo : null;
+    window.pip.showMenu(repo ? repoKey(repo) : null);
   });
 
-  // Drag the frameless window from anywhere in the container.
-  let dragging = false, lastX = 0, lastY = 0;
+  // Drag the frameless window from anywhere in the container — but a plain
+  // click (no movement) on a card jumps to that repo's window instead. The
+  // two are told apart by movement, not hold duration: if the cursor moves
+  // past CLICK_MOVE_PX between mousedown and mouseup it's a drag, otherwise
+  // it's a click, no matter how long the button was held. That's the
+  // standard convention (File Explorer, browsers, …) and is more forgiving
+  // than a duration threshold, which would misfire on a slow deliberate
+  // click. The native "click" event isn't usable for this on its own: since
+  // dragging moves the OS window (not the DOM), the DOM element under the
+  // cursor at mouseup is unaffected by the drag, so a plain click listener
+  // would fire "click" after every drag too — hence tracking this by hand.
+  const CLICK_MOVE_PX = 4;
+  let dragging = false, dragMoved = false, dragStartX = 0, dragStartY = 0, lastX = 0, lastY = 0;
   container.addEventListener("mousedown", (e) => {
-    if (e.target.closest(".close") || e.target.closest("#quit")) return; // don't drag on buttons
-    dragging = true; lastX = e.screenX; lastY = e.screenY;
+    // Don't drag/click-navigate from buttons or the icon (icon click opens
+    // its own menu instead) — returning here means dragging never becomes
+    // true for these targets, so the mouseup handler below naturally skips
+    // the click-to-focus logic for them too.
+    if (e.target.closest(".close") || e.target.closest("#quit") || e.target.closest(".repoicon")) return;
+    dragging = true; dragMoved = false;
+    dragStartX = lastX = e.screenX; dragStartY = lastY = e.screenY;
   });
   window.addEventListener("mousemove", (e) => {
     if (!dragging) return;
     const dx = e.screenX - lastX, dy = e.screenY - lastY;
     lastX = e.screenX; lastY = e.screenY;
     window.pip.drag(dx, dy);
+    if (!dragMoved && Math.hypot(e.screenX - dragStartX, e.screenY - dragStartY) > CLICK_MOVE_PX) {
+      dragMoved = true;
+    }
   });
-  window.addEventListener("mouseup", () => (dragging = false));
+  window.addEventListener("mouseup", (e) => {
+    const wasClick = dragging && !dragMoved;
+    dragging = false;
+    if (!wasClick) return;
+    const card = e.target.closest(".card");
+    if (card && card.dataset.repoName) window.pip.focusRepo(card.dataset.repoName);
+  });
 </script>
 </body>
 </html>

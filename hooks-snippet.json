@@ -1,22 +1,22 @@
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs UserPromptSubmit" } ] }
+      { "hooks": [ { "type": "command", "command": "node /absolute/path/to/claude-code-status-card/src/hook-relay.cjs UserPromptSubmit" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs PreToolUse" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "node /absolute/path/to/claude-code-status-card/src/hook-relay.cjs PreToolUse" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs PostToolUse" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "node /absolute/path/to/claude-code-status-card/src/hook-relay.cjs PostToolUse" } ] }
     ],
     "Notification": [
-      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs Notification" } ] }
+      { "hooks": [ { "type": "command", "command": "node /absolute/path/to/claude-code-status-card/src/hook-relay.cjs Notification" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs Stop" } ] }
+      { "hooks": [ { "type": "command", "command": "node /absolute/path/to/claude-code-status-card/src/hook-relay.cjs Stop" } ] }
     ],
     "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "node C:\\Users\\timch\\claude-code-pip\\src\\hook-relay.cjs SubagentStop" } ] }
+      { "hooks": [ { "type": "command", "command": "node /absolute/path/to/claude-code-status-card/src/hook-relay.cjs SubagentStop" } ] }
     ]
   }
 }
