@@ -520,13 +520,19 @@ folder-name substring in the window title is the best available proxy.
   Code's own permission model, `Bash` and `WebSearch` get a short 3.5s fuse:
   Bash approval is remembered permanently per repo + exact command (so any
   new command re-prompts), and `WebSearch` has no session-level "always
-  allow" at all, so it can re-prompt on nearly every call. Every other tool
-  gets a 15s fuse — `Edit`/`Write`/`NotebookEdit` approval lasts until session
-  end and `WebFetch` only prompts on the first hit to a new domain, so after
-  that they routinely run long on big files/pages without ever needing
-  approval again. If `Notification` *does* fire, it takes precedence and
-  shows red immediately. The Bash/WebSearch fuse can't go much shorter than
-  3.5s: every hook spawns a fresh `node hook-relay.cjs` process, plus a
+  allow" at all, so it can re-prompt on nearly every call. `AskUserQuestion`
+  gets an even shorter 800ms fuse — per Claude Code's own tools reference,
+  it's the one tool where "Permission required" is actually "No," not
+  because it skips confirmation but because it isn't gated by the permission
+  system at all: it's *always* a direct, synchronous wait for your input the
+  instant it's called, with no "resolved instantly without needing you" case
+  to guard against by waiting longer. Every other tool gets a 15s fuse —
+  `Edit`/`Write`/`NotebookEdit` approval lasts until session end and
+  `WebFetch` only prompts on the first hit to a new domain, so after that
+  they routinely run long on big files/pages without ever needing approval
+  again. If `Notification` *does* fire, it takes precedence and shows red
+  immediately. The Bash/WebSearch fuse can't go much shorter than 3.5s:
+  every hook spawns a fresh `node hook-relay.cjs` process, plus a
   PreToolUse -> tool runs -> PostToolUse round-trip through Claude Code
   itself, and cold Node process-spawn overhead on Windows (especially with
   several hooks firing back to back) can eat past a second on its own — a

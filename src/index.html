@@ -125,7 +125,16 @@
   // observed false-positiving an auto-approved, no-prompt `ls` at 1500ms.
   // 3500ms gives headroom against that while still being much faster than
   // the 15s default.
-  const APPROVAL_HINT_MS_BY_TOOL = { Bash: 3500, WebSearch: 3500 };
+  //
+  // AskUserQuestion gets an even shorter fuse (800ms): per Claude Code's own
+  // tools reference, it's the one tool where "Permission required" is
+  // actually "No" — not because it skips confirmation, but because it isn't
+  // gated by the permission system at all. It's *always* a direct,
+  // synchronous wait for your input the instant it's called, with no
+  // "resolved instantly without needing you" case the way a fast Bash
+  // command has — so there's no false-positive risk to guard against by
+  // waiting longer, unlike Bash/WebSearch.
+  const APPROVAL_HINT_MS_BY_TOOL = { Bash: 3500, WebSearch: 3500, AskUserQuestion: 800 };
   const APPROVAL_HINT_MS_DEFAULT = 15000;
   function approvalHintMsFor(toolName) {
     return APPROVAL_HINT_MS_BY_TOOL[toolName] ?? APPROVAL_HINT_MS_DEFAULT;
