@@ -152,6 +152,15 @@ icon identifies *which repo*, the indicator shows *what state*.
   `src/index.html`), unless the session sends another event first.
 - "Needs Approval" is often **inferred**, not signalled — see the limitation
   in "Things you should know" on the `Notification` hook.
+- **`SubagentStop` is treated as still-`Working`, not `Done`.** A background
+  subagent/Task finishing its own sub-conversation doesn't mean the overall
+  session is done — the main turn is very likely still running (spawning
+  more subagents, synthesizing results, continuing the workflow). Only a
+  real `Stop` (the main turn actually ending, control returning to you)
+  flips the card green. Treating them the same used to flip the card green
+  — and play the finish sound — on *every individual subagent completion*
+  during a multi-agent workflow, even while the session kept working in the
+  background: misleading and, with several subagents, noisy.
 
 #### Audio cues
 

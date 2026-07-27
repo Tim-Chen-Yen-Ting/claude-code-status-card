@@ -350,8 +350,18 @@
       case "Notification":
         newState = { ...base, kind: "approval", label: "Needs you!", detail: ev.message || "Approval required", retireAt: null };
         break;
-      case "Stop":
       case "SubagentStop":
+        // A background subagent/Task finished its own sub-conversation —
+        // the main session is very likely still working (synthesizing
+        // results, spawning more subagents, continuing the workflow), not
+        // actually done. Treating this as "done" used to flip the card
+        // green and play the finish sound on every individual subagent
+        // completion during a multi-agent workflow, even while the overall
+        // session kept running — misleading, and noisy. Stay "Working";
+        // only a real Stop means the turn is actually over.
+        newState = { ...base, kind: "working", label: "Thinking…", detail: "Subagent finished", retireAt: null };
+        break;
+      case "Stop":
         newState = { ...base, kind: "done", label: "Done", detail: "Waiting for next message", retireAt: Date.now() + RETIRE_AFTER_MS };
         break;
       default:
