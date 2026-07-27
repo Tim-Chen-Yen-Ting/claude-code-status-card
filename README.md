@@ -1,5 +1,7 @@
 # claude-code-status-card
 
+## What it does
+
 Always-on-top mini widget that shows live, **per-session** status for every
 Claude Code session running on this machine (thinking / running a tool /
 **needs your approval** / done), so you don't have to keep VSCode or a
@@ -7,6 +9,248 @@ terminal focused to notice when a session is stuck waiting on you.
 
 Not tied to any one project — it works for any Claude Code session on this
 machine, because it's fed by global Claude Code **hooks**, not by VSCode.
+
+## How to use
+
+### Install
+
+#### Get the code
+
+Two ways to get this repo onto the machine you want the widget on:
+
+- **`git clone` (recommended)** — if git is installed:
+
+  ```
+  git clone https://github.com/Tim-Chen-Yen-Ting/claude-code-status-card.git
+  ```
+
+  Cleaner than a ZIP download (no extra nested folder — see below), and lets
+  you `git pull` later for updates.
+
+- **Download ZIP** — if you don't have git: go to the repo's GitHub page →
+  the green **Code** button → **Download ZIP**, then extract it.
+
+  **Watch out for a doubled folder.** GitHub ZIPs extract into a folder
+  named `<repo>-main` (e.g. `claude-code-status-card-main`). If you then
+  extract *that* into a folder of the same name, or your unzip tool nests it
+  again, you can end up with
+  `claude-code-status-card-main\claude-code-status-card-main` — the actual
+  repo (with `install.bat`, `package.json`, etc. directly inside) is the
+  *innermost* one. Make sure you're pointed at the folder that directly
+  contains `install.bat`, not a folder that merely contains another folder
+  that contains it.
+
+#### One-click setup
+
+Double-click **`install.bat`**, from inside whichever folder actually
+contains it (see the doubled-folder note above if using a ZIP download). It
+runs `npm install`, merges this repo's hooks into `~/.claude/settings.json`
+(without touching your other settings or any other tool's hooks — see
+below), sets up the Startup shortcut so the widget auto-starts at login, and
+launches it — all in one go.
+
+What to expect:
+
+1. A console window opens and stays open (unlike the widget's own launcher,
+   which hides itself for quiet daily use — this one deliberately stays
+   visible so you actually see progress and any real error, instead of
+   wondering whether it silently hung or failed).
+2. `[1/3] Installing dependencies...` — this downloads Electron's ~180 MB
+   prebuilt binary from GitHub Releases and **can take a long while, or
+   appear to hang, on a slow link. Let it finish.** A line like `npm warn
+   deprecated ...` partway through is harmless noise, not a failure — it's
+   normal for `npm install` to print several of these regardless of whether
+   the install ultimately succeeds.
+3. `[2/3]` and `[3/3]` (hooks + Startup shortcut) are near-instant.
+4. `== Setup complete! ==`, then the widget launches. The window pauses at
+   the end (`press any key to close`) so you have time to read the final
+   status before it closes.
+5. **Confirm it worked:** look for the widget in the bottom-right corner of
+   your screen — an "Idle — no active sessions" pill if no Claude Code
+   session is currently running. Start (or continue) a Claude Code session
+   and a card should appear for it on its next prompt.
+
+If it fails, the visible console window will show why — most commonly
+either `npm` not found (install Node.js from nodejs.org, which bundles npm)
+or an `ETIMEDOUT` reaching `github.com` (network/VPN issue reaching GitHub
+Releases; see the Electron-download note above).
+
+`install.bat` just calls `install.ps1` (`powershell -ExecutionPolicy Bypass
+-File install.ps1`) — run that directly if you'd rather not have a `.bat`
+wrapper. It's **safe to re-run** any time, e.g. after moving/renaming the
+repo: it updates its own hook entries in place (matched by any command
+referencing `hook-relay.cjs`, regardless of the path in it) rather than
+duplicating them, and never touches other settings keys or other tools'
+hook entries for the same events.
+
+#### Manual setup
+
+If you'd rather do it by hand, or `install.bat` doesn't work for your setup:
+
+```
+npm install     # pulls down Electron — needs network access to github.com
+npm start
+```
+
+`npm install` downloads Electron's ~180 MB prebuilt binary from GitHub
+Releases and can take a long while (or appear to hang) on a slow link — let
+it finish. If it fails with `ETIMEDOUT` reaching an IP under `github.com`,
+run it from a network/VPN that can reach github.com, or set an
+`ELECTRON_MIRROR` env var pointing at an internal mirror, then retry.
+
+The hooks live in `~/.claude/settings.json` under the `"hooks"` key — merge
+in the block from `hooks-snippet.json`, replacing
+`/absolute/path/to/claude-code-status-card` with wherever this repo actually
+lives (see the Windows gotcha right below — **use forward slashes**).
+Config is re-read on each hook invocation, so you do **not** need to restart
+running sessions after editing it.
+
+#### Hook path gotcha (Windows)
+
+The hook `command` strings must point at wherever this repo actually lives,
+and **must use forward slashes**, e.g.:
+
+```
+node D:/claude-code-status-card/src/hook-relay.cjs PreToolUse
+```
+
+Do **not** use backslashes (`D:\claude-code-status-card\src\...`). Claude
+Code's hook layer strips backslashes when it invokes the command, so
+`D:\claude-code-status-card\src\hook-relay.cjs` collapses to
+`D:claude-code-status-cardsrchook-relay.cjs` and fails with `MODULE_NOT_FOUND`.
+Symptom: `UserPromptSubmit hook error … Cannot find module` and the widget
+never leaves Idle. Forward slashes work fine with `node` on Windows and
+avoid the escaping entirely. (`install.bat`/`install.ps1` handle this
+automatically — this only matters for manual setup.)
+
+### The widget
+
+One card per active session. Each card shows the repository icon, a status
+indicator + label, the latest prompt as the session's **name** (refreshed
+every turn — so the card reflects what that thread is doing right now), and
+the repository folder name. Cards sort newest-activity first.
+
+#### Card states
+
+There are three visible states (thinking and tool-running are intentionally
+merged — you don't need to tell them apart):
+
+| Indicator                | Label            | Meaning                            |
+|--------------------------|------------------|------------------------------------|
+| blue animated spinner    | `Working`        | thinking or running a tool         |
+| red double-bang (pulsing)| `Needs Approval` | **needs your approval** — go check |
+| green check              | `Done`           | turn finished, waiting for you     |
+
+The status indicator is separate from the repository icon on the left: the
+icon identifies *which repo*, the indicator shows *what state*.
+
+- When there are no sessions, a single "Idle — no active sessions" pill
+  shows instead.
+- **Approvals are sticky:** a "Needs Approval" card never auto-clears (so you
+  can't miss it). It's replaced when the session emits its next event.
+- **Done cards auto-retire** ~5 min after `Stop` (see `RETIRE_AFTER_MS` in
+  `src/index.html`), unless the session sends another event first.
+- "Needs Approval" is often **inferred**, not signalled — see the limitation
+  in "Things you should know" on the `Notification` hook.
+
+#### Audio cues
+
+Red and green states also play a sound — an audible companion to the visual
+states so a card grabs attention even when you're not looking at the
+screen. This lives entirely in `src/index.html` (`playTransitionSound`,
+`SOUND_APPROVAL`/`SOUND_DONE`); it's just an `Audio` object played from the
+renderer, **not** a Claude Code hook — no extra hook or PowerShell script
+involved, unlike a plain `Stop`-hook-triggered sound would be. That matters
+here because it fires on the widget's own inferred state, including the
+timer-based "Needs you?" escalation (see "Approval status is inferred, not
+signalled" in "Things you should know") — a hook on the real
+`Stop`/`Notification` events alone couldn't do that, since the widget's own
+approval inference doesn't correspond to any single hook firing.
+
+- **`assets/sound/finish.mp3`** plays on transition into `Done`.
+- **`assets/sound/approval.mp3`** plays on transition into `Needs Approval`
+  (both the real `Notification` path and the inferred timeout escalation).
+- Only fires on a genuine transition (comparing the session's previous
+  `kind` to its new one) — not on every re-render of an already-red/green
+  card, so it won't replay on the periodic retirement sweep or an unrelated
+  event.
+- `Audio.volume` is left at its default (`1.0`), which is a multiplier
+  *relative to* the system's current output level, not an absolute value —
+  this never assumes or overrides your actual volume setting.
+- To disable: remove/empty those two files, or comment out the
+  `playTransitionSound` calls in `applyEvent`/`escalateToApproval`. To swap
+  a sound: replace the file at the same path (any format Chromium's
+  `<audio>` supports — mp3/wav/ogg — works, since the extension is only
+  used to pick a codec, not hardcoded elsewhere).
+
+#### Controls
+
+- **Click a card** (anywhere except its icon) to jump to that repo's window
+  — see "Click-to-focus a repo's window" in "How it works" for the
+  mechanism and its real limitations.
+- **Drag** the widget by clicking and holding anywhere on a card (or the
+  idle pill) and moving the cursor — except the repository icon itself,
+  which opens the icon menu instead (see below). Click vs. drag is told
+  apart by cursor movement, not how long you hold the button: if the cursor
+  moves more than a few pixels between mousedown and mouseup it's a drag,
+  otherwise it's a click-to-focus (`CLICK_MOVE_PX` in `src/index.html`).
+- **Click a card's icon** to pop up a native menu listing every icon in the
+  set at the cursor; picking one reassigns that repo's icon immediately (see
+  "Repository icons" in "How it works").
+- **✕** on a card removes just that session from the widget. Use this when
+  you kill a terminal session (which fires no `Stop` hook, so its card would
+  otherwise linger). If you prompt that thread again, the card reappears.
+- **Right-click anywhere on the widget** (or the tray icon) for the full
+  menu: "Clear all cards" (wipe all sessions from the widget), "Reset
+  position", and "Quit". Right-clicking anywhere on a card also adds a
+  "Change icon" submenu with the same choices as clicking the icon directly
+  (not only when the click lands precisely on the small icon — that would be
+  a fiddly target). The right-click menu means you can always quit from the
+  window itself — handy since Windows often hides the tray icon in the `^`
+  overflow. To get the widget out of the way of something behind it, just
+  drag it aside.
+- **⏻** on the idle pill quits the widget (the idle state has no session
+  cards, so this is its dedicated quit button).
+
+### Running it standalone / at startup
+
+The widget is a plain Electron process — it does **not** depend on VSCode.
+`npm start` only ties it to the terminal you launched it from (close that
+terminal and the child process dies). To run it independently:
+
+- **`start-pip.vbs`** (in the repo root) launches it with **no visible
+  console window**. Double-click to run it now, without keeping a terminal
+  open. It's **self-locating** — it invokes `restart-pip.ps1` from its own
+  folder, so moving/renaming the repo doesn't break it (as long as you run
+  the copy inside the repo). `restart-pip.ps1` in turn kills any instance of
+  this widget that's already running (matched by repo path, so it never
+  touches an unrelated Electron app) before starting a fresh `npm start` —
+  so every trigger (double-click, or login via the Startup shortcut below)
+  always converges to exactly one, up-to-date instance instead of stacking
+  duplicates or leaving a stale process running after you've edited the
+  code.
+- **Auto-start at login:** put a **shortcut** to `start-pip.vbs` in your
+  Startup folder — `Win+R` -> `shell:startup`. One is installed there as
+  `claude-code-status-card.lnk`; delete it to disable auto-start. Use a
+  shortcut, not a copy — a copy would self-locate to the Startup folder and
+  fail. With this in place the widget runs from login and survives VSCode
+  being closed, so you never touch `npm start` again. (`install.bat` sets
+  this up for you automatically.)
+
+Note: every launch starts from Idle and only shows sessions that fire an
+event afterward (see "The widget only tails new events" in "Things you
+should know"). The tray "Quit" stops the widget cleanly.
+
+For a true installable `.exe` (no `npm`/source folder needed), package it
+with `electron-builder` or `electron-packager` — heavier setup, not required
+for the VBS approach.
+
+### Uninstall
+
+1. Remove the `"hooks"` key from `~/.claude/settings.json`.
+2. Delete the Startup entry: `Win+R` -> `shell:startup` -> delete
+   `claude-code-status-card.lnk`.
+3. Delete this folder and `~/.claude-status-card/`.
 
 ## How it works
 
@@ -23,7 +267,7 @@ machine, because it's fed by global Claude Code **hooks**, not by VSCode.
    updates it live. The window auto-resizes to fit the cards and floats at
    the bottom-right corner, above all other windows, on every workspace.
 
-## Architecture / file map
+### Architecture / file map
 
 For someone (human or AI) picking this up:
 
@@ -50,7 +294,7 @@ For someone (human or AI) picking this up:
   `currentColor` SVG per icon, shared `0 0 24 24` viewBox). See
   "Repository icons" below.
 - **`assets/sound/finish.mp3`** / **`assets/sound/approval.mp3`** — audio
-  cues for the `Done`/`Needs Approval` states. See "Audio cues" below.
+  cues for the `Done`/`Needs Approval` states. See "Audio cues" above.
 - **`~/.claude-status-card/events.ndjson`** — the shared event log (data dir
   is `~/.claude-status-card/`). Not in the repo; created at runtime.
 - **`~/.claude-status-card/icon-map.json`** — persisted repo→icon
@@ -58,20 +302,20 @@ For someone (human or AI) picking this up:
   See "Repository icons" below — this is also the manual-override entry
   point.
 - **`hooks-snippet.json`** — reference copy of the `"hooks"` block to merge
-  into `~/.claude/settings.json` by hand; see "Setup" above. `install.ps1`
+  into `~/.claude/settings.json` by hand; see "Install" above. `install.ps1`
   builds the same structure natively rather than parsing this file, since
   it needs the real absolute path substituted in anyway.
 - **`install.bat`** / **`install.ps1`** — one-click setup: `npm install`,
   merge hooks into `~/.claude/settings.json`, create the Startup shortcut,
-  and launch the widget. See "Setup" above.
+  and launch the widget. See "Install" above.
 - **`start-pip.vbs`** — no-console-window launcher; delegates to
-  `restart-pip.ps1`. See "Running it standalone / at startup" below.
+  `restart-pip.ps1`. See "Running it standalone / at startup" above.
 - **`restart-pip.ps1`** — kills any already-running instance of this widget
   (matched by repo path in the process command line) before starting a
   fresh `npm start`, so every launch trigger ends up as exactly one,
   up-to-date instance instead of stacking duplicates.
 
-### Electron sandbox gotcha
+#### Electron sandbox gotcha
 
 The window is created with `sandbox: false` in `webPreferences`
 (`src/main.js`). This is **required**: `preload.js` uses `require("fs")` to
@@ -163,160 +407,13 @@ point at a subdirectory a tool is currently working in, which changes depth
 turn to turn. That broke any repo not sitting directly at a drive root (e.g.
 `C:\Users\...\Projects\my-repo` truncated to `C:\Users`, never the actual
 repo name) — wrong for icon assignment, the `.cwd` label, and
-window-navigation matching (see "Running Claude Code sessions" below) alike.
-The real fix lives in the renderer instead: `applyEvent` in `src/index.html`
-pins each session to its **first-ever reported** `cwd` (`existing.cwd ||
-ev.cwd`, not the other way around) — typically from `UserPromptSubmit`,
-which is always the session's real root — so a later `PreToolUse`/
-`PostToolUse` reporting a deeper subdirectory can't silently drift the
-repo identity mid-session.
-
-## Setup
-
-### One-click (recommended)
-
-Double-click **`install.bat`**. It runs `npm install`, merges this repo's
-hooks into `~/.claude/settings.json` (without touching your other settings
-or any other tool's hooks — see below), sets up the Startup shortcut so the
-widget auto-starts at login, and launches it — all in one go. Unlike
-`start-pip.vbs` (which hides its window for quiet daily use), `install.bat`
-deliberately keeps a visible console window open and pauses at the end, so
-you actually see `npm install`'s progress and any real error instead of
-wondering whether it silently hung or failed.
-
-`install.bat` just calls `install.ps1` (`powershell -ExecutionPolicy Bypass
--File install.ps1`) — run that directly if you'd rather not have a `.bat`
-wrapper. It's **safe to re-run** any time, e.g. after moving/renaming the
-repo: it updates its own hook entries in place (matched by any command
-referencing `hook-relay.cjs`, regardless of the path in it) rather than
-duplicating them, and never touches other settings keys or other tools'
-hook entries for the same events.
-
-### Manual
-
-If you'd rather do it by hand, or `install.bat` doesn't work for your setup:
-
-```
-npm install     # pulls down Electron — needs network access to github.com
-npm start
-```
-
-`npm install` downloads Electron's ~180 MB prebuilt binary from GitHub
-Releases and can take a long while (or appear to hang) on a slow link — let
-it finish. If it fails with `ETIMEDOUT` reaching an IP under `github.com`,
-run it from a network/VPN that can reach github.com, or set an
-`ELECTRON_MIRROR` env var pointing at an internal mirror, then retry.
-
-The hooks live in `~/.claude/settings.json` under the `"hooks"` key — merge
-in the block from `hooks-snippet.json`, replacing
-`/absolute/path/to/claude-code-status-card` with wherever this repo actually
-lives (see the Windows gotcha right below — **use forward slashes**).
-Config is re-read on each hook invocation, so you do **not** need to restart
-running sessions after editing it.
-
-### Hook path gotcha (Windows)
-
-The hook `command` strings must point at wherever this repo actually lives,
-and **must use forward slashes**, e.g.:
-
-```
-node D:/claude-code-status-card/src/hook-relay.cjs PreToolUse
-```
-
-Do **not** use backslashes (`D:\claude-code-status-card\src\...`). Claude
-Code's hook layer strips backslashes when it invokes the command, so
-`D:\claude-code-status-card\src\hook-relay.cjs` collapses to
-`D:claude-code-status-cardsrchook-relay.cjs` and fails with `MODULE_NOT_FOUND`.
-Symptom: `UserPromptSubmit hook error … Cannot find module` and the widget
-never leaves Idle. Forward slashes work fine with `node` on Windows and
-avoid the escaping entirely.
-
-## The widget
-
-One card per active session. Each card shows the repository icon, a status
-indicator + label, the latest prompt as the session's **name** (refreshed
-every turn — so the card reflects what that thread is doing right now), and
-the repository folder name. Cards sort newest-activity first.
-
-### Card states
-
-There are three visible states (thinking and tool-running are intentionally
-merged — you don't need to tell them apart):
-
-| Indicator                | Label            | Meaning                            |
-|--------------------------|------------------|------------------------------------|
-| blue animated spinner    | `Working`        | thinking or running a tool         |
-| red double-bang (pulsing)| `Needs Approval` | **needs your approval** — go check |
-| green check              | `Done`           | turn finished, waiting for you     |
-
-The status indicator is separate from the repository icon on the left: the
-icon identifies *which repo*, the indicator shows *what state*.
-
-### Audio cues
-
-Red and green states also play a sound — an audible companion to the visual
-states so a card grabs attention even when you're not looking at the
-screen. This lives entirely in `src/index.html` (`playTransitionSound`,
-`SOUND_APPROVAL`/`SOUND_DONE`); it's just an `Audio` object played from the
-renderer, **not** a Claude Code hook — no extra hook or PowerShell script
-involved, unlike a plain `Stop`-hook-triggered sound would be. That matters
-here because it fires on the widget's own inferred state, including the
-timer-based "Needs you?" escalation (see "Approval status is inferred, not
-signalled" below) — a hook on the real `Stop`/`Notification` events alone
-couldn't do that, since the widget's own approval inference doesn't
-correspond to any single hook firing.
-
-- **`assets/sound/finish.mp3`** plays on transition into `Done`.
-- **`assets/sound/approval.mp3`** plays on transition into `Needs Approval`
-  (both the real `Notification` path and the inferred timeout escalation).
-- Only fires on a genuine transition (comparing the session's previous
-  `kind` to its new one) — not on every re-render of an already-red/green
-  card, so it won't replay on the periodic retirement sweep or an unrelated
-  event.
-- `Audio.volume` is left at its default (`1.0`), which is a multiplier
-  *relative to* the system's current output level, not an absolute value —
-  this never assumes or overrides your actual volume setting.
-- To disable: remove/empty those two files, or comment out the
-  `playTransitionSound` calls in `applyEvent`/`escalateToApproval`. To swap
-  a sound: replace the file at the same path (any format Chromium's
-  `<audio>` supports — mp3/wav/ogg — works, since the extension is only
-  used to pick a codec, not hardcoded elsewhere).
-
-- When there are no sessions, a single "Idle — no active sessions" pill
-  shows instead.
-- **Approvals are sticky:** a "Needs Approval" card never auto-clears (so you
-  can't miss it). It's replaced when the session emits its next event.
-- **Done cards auto-retire** ~5 min after `Stop` (see `RETIRE_AFTER_MS` in
-  `src/index.html`), unless the session sends another event first.
-- "Needs Approval" is often **inferred**, not signalled — see the limitation
-  below on the `Notification` hook.
-
-### Controls
-
-- **Click a card** (anywhere except its icon) to jump to that repo's window
-  — see "Click-to-focus a repo's window" below for how this works and its
-  real limitations.
-- **Drag** the widget by clicking and holding anywhere on a card (or the
-  idle pill) and moving the cursor — except the repository icon itself,
-  which opens the icon menu instead (see below). Click vs. drag is told
-  apart by cursor movement, not how long you hold the button: if the cursor
-  moves more than a few pixels between mousedown and mouseup it's a drag,
-  otherwise it's a click-to-focus (`CLICK_MOVE_PX` in `src/index.html`).
-- **Click a card's icon** to pop up a native menu listing every icon in the
-  set at the cursor; picking one reassigns that repo's icon immediately (see
-  "Repository icons" above).
-- **✕** on a card removes just that session from the widget. Use this when
-  you kill a terminal session (which fires no `Stop` hook, so its card would
-  otherwise linger). If you prompt that thread again, the card reappears.
-- **Right-click anywhere on the widget** (or the tray icon) for the full
-  menu: "Clear all cards" (wipe all sessions from the widget), "Reset
-  position", and "Quit". Right-clicking anywhere on a card also adds a
-  "Change icon" submenu with the same choices as clicking the icon directly
-  (not only when the click lands precisely on the small icon — that would be
-  a fiddly target). The right-click menu means you can always quit from the
-  window itself — handy since Windows often hides the tray icon in the `^`
-  overflow. To get the widget out of the way of something behind it, just
-  drag it aside.
+window-navigation matching (see "Click-to-focus a repo's window" below)
+alike. The real fix lives in the renderer instead: `applyEvent` in
+`src/index.html` pins each session to its **first-ever reported** `cwd`
+(`existing.cwd || ev.cwd`, not the other way around) — typically from
+`UserPromptSubmit`, which is always the session's real root — so a later
+`PreToolUse`/`PostToolUse` reporting a deeper subdirectory can't silently
+drift the repo identity mid-session.
 
 ### Click-to-focus a repo's window
 
@@ -336,7 +433,7 @@ Visual Studio Code` (the active file leads, not the repo folder), so an
 `AppActivate` call against just the folder name reliably found nothing.
 Instead, the script enumerates top-level windows directly via user32
 (`EnumWindows`/`GetWindowText`) and does a real substring search, then
-raises the match with `SetForegroundWindow`. Two non-obvious pitfalls came
+raises the match with `SetForegroundWindow`. Four non-obvious pitfalls came
 up getting this right, worth knowing if you touch this code:
 
 - **`GetWindowText` needs `CharSet = CharSet.Unicode`** on its `DllImport`
@@ -394,19 +491,8 @@ folder-name substring in the window title is the best available proxy.
   the same repo, can't be told apart from a title substring alone; this just
   activates whichever matching window `EnumWindows` happens to enumerate
   first.
-- **⏻** on the idle pill quits the widget (the idle state has no session
-  cards, so this is its dedicated quit button).
 
-Launching via `start-pip.vbs` always kills any already-running instance
-first (see `restart-pip.ps1`), so you shouldn't normally end up with
-duplicates that way. But running `npm start` directly (bypassing the VBS)
-doesn't have that guard, and duplicates can still stack at the same corner
-and look like one widget. Confirm via the tray (one icon per instance), or
-kill them all from a terminal:
-`Get-CimInstance Win32_Process -Filter "name='electron.exe'" | Where-Object { $_.CommandLine -like "*claude-code-status-card*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
-(this is exactly what `restart-pip.ps1` automates).
-
-## Known limitations / non-goals
+## Things you should know
 
 - **One-way only.** Hooks are an outbound channel; the widget cannot send a
   prompt back into a session. Typing into a running Claude Code session
@@ -480,47 +566,23 @@ kill them all from a terminal:
   so a session already mid-flight when the widget launches won't appear until
   its next hook fires — the deliberate cost of not resurrecting stale/killed
   sessions that never sent a `Stop`.
+- **Duplicate widgets.** Launching via `start-pip.vbs` always kills any
+  already-running instance first (see `restart-pip.ps1`), so you shouldn't
+  normally end up with duplicates that way. But running `npm start` directly
+  (bypassing the VBS) doesn't have that guard, and duplicates can still stack
+  at the same corner and look like one widget. Confirm via the tray (one
+  icon per instance), or kill them all from a terminal:
+  `Get-CimInstance Win32_Process -Filter "name='electron.exe'" | Where-Object { $_.CommandLine -like "*claude-code-status-card*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
+  (this is exactly what `restart-pip.ps1` automates).
 
-## Running it standalone / at startup
-
-The widget is a plain Electron process — it does **not** depend on VSCode.
-`npm start` only ties it to the terminal you launched it from (close that
-terminal and the child process dies). To run it independently:
-
-- **`start-pip.vbs`** (in the repo root) launches it with **no visible
-  console window**. Double-click to run it now, without keeping a terminal
-  open. It's **self-locating** — it invokes `restart-pip.ps1` from its own
-  folder, so moving/renaming the repo doesn't break it (as long as you run
-  the copy inside the repo). `restart-pip.ps1` in turn kills any instance of
-  this widget that's already running (matched by repo path, so it never
-  touches an unrelated Electron app) before starting a fresh `npm start` —
-  so every trigger (double-click, or login via the Startup shortcut below)
-  always converges to exactly one, up-to-date instance instead of stacking
-  duplicates or leaving a stale process running after you've edited the
-  code.
-- **Auto-start at login:** put a **shortcut** to `start-pip.vbs` in your
-  Startup folder — `Win+R` -> `shell:startup`. One is installed there as
-  `claude-code-status-card.lnk`; delete it to disable auto-start. Use a
-  shortcut, not a copy — a copy would self-locate to the Startup folder and
-  fail. With this in place the widget runs from login and survives VSCode
-  being closed, so you never touch `npm start` again.
-
-Note: every launch starts from Idle and only shows sessions that fire an
-event afterward (see the tail-only-new limitation above). The tray "Quit"
-stops the widget cleanly.
-
-For a true installable `.exe` (no `npm`/source folder needed), package it with
-`electron-builder` or `electron-packager` — heavier setup, not required for
-the VBS approach.
-
-## Renaming / moving the repo
+### Renaming / moving the repo
 
 The data dir (`~/.claude-status-card/`) and icons (loaded relative to the
 code) are independent of the folder name, so those are fine. But these hold
 **absolute paths** and must be updated after a rename/move — easiest way is
 to just re-run **`install.bat`** from the new location: it updates the hook
-paths and the Startup shortcut in place (see "Setup" above), so you can skip
-the manual steps below entirely unless you'd rather not run it:
+paths and the Startup shortcut in place (see "Install" above), so you can
+skip the manual steps below entirely unless you'd rather not run it:
 
 1. **`~/.claude/settings.json`** — the 6 hook `command` paths. This is the
    critical one; if it's wrong the widget silently stays on Idle (see the
@@ -544,10 +606,3 @@ Optional / cosmetic (nothing breaks if you skip these):
 
 Tip: keep the folder name space-free to avoid path-quoting headaches; use a
 spaced display name only in the README / `package.json` description.
-
-## Uninstall
-
-1. Remove the `"hooks"` key from `~/.claude/settings.json`.
-2. Delete the Startup entry: `Win+R` -> `shell:startup` -> delete
-   `claude-code-status-card.lnk`.
-3. Delete this folder and `~/.claude-status-card/`.
