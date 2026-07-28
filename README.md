@@ -194,9 +194,13 @@ approval inference doesn't correspond to any single hook firing.
 
 #### Controls
 
-- **Click a card** (anywhere except its icon) to jump to that repo's window
-  — see "Click-to-focus a repo's window" in "How it works" for the
-  mechanism and its real limitations.
+- **Left-click a card** (anywhere except its icon) to jump to that repo's
+  window — see "Click-to-focus a repo's window" in "How it works" for the
+  mechanism and its real limitations. Gated on `e.button === 0` in the
+  `mousedown` handler in `src/index.html` — without that check, a
+  stationary right-click (zero cursor movement, same as a real left-click)
+  was misread as a genuine click and fired `focusRepo()`, yanking focus away
+  and killing the context menu less than a second after it opened.
 - **Drag** the widget by clicking and holding anywhere on a card (or the
   idle pill) and moving the cursor — except the repository icon itself,
   which opens the icon menu instead (see below). Click vs. drag is told

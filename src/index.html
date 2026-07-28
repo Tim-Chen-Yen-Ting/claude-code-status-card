@@ -507,6 +507,14 @@
   const CLICK_MOVE_PX = 4;
   let dragging = false, dragMoved = false, dragStartX = 0, dragStartY = 0, lastX = 0, lastY = 0;
   container.addEventListener("mousedown", (e) => {
+    // Left button only (button 0) — a right-click's mousedown/mouseup pair
+    // was falling through to the same "was this a click?" logic below with
+    // zero movement (a stationary right-click), so it read as a genuine
+    // left-click and fired focusRepo(), yanking focus away and killing the
+    // context menu that had just opened. Returning here means dragging
+    // never becomes true for a right-click, so mouseup naturally skips both
+    // the drag and the click-to-focus logic for it.
+    if (e.button !== 0) return;
     // Don't drag/click-navigate from buttons or the icon (icon click opens
     // its own menu instead) — returning here means dragging never becomes
     // true for these targets, so the mouseup handler below naturally skips
