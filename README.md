@@ -215,11 +215,12 @@ approval inference doesn't correspond to any single hook firing.
   otherwise linger). If you prompt that thread again, the card reappears.
 - **Right-click anywhere on the widget** (or the tray icon) for the full
   menu: "Clear all cards" (wipe all sessions from the widget), "Reset
-  position", and "Quit". Right-clicking anywhere on a card also adds a
-  "Change icon" submenu with the same choices as clicking the icon directly
-  (not only when the click lands precisely on the small icon — that would be
-  a fiddly target). The right-click menu means you can always quit from the
-  window itself — handy since Windows often hides the tray icon in the `^`
+  position", and "Quit". Right-clicking anywhere on a card also adds "Change
+  icon" (same choices as clicking the icon directly) and "Change color" (12
+  fixed hues — see "Repository icons" in "How it works") submenus (not only
+  when the click lands precisely on the small icon — that would be a fiddly
+  target). The right-click menu means you can always quit from the window
+  itself — handy since Windows often hides the tray icon in the `^`
   overflow. To get the widget out of the way of something behind it, just
   drag it aside.
 - **⏻** on the idle pill quits the widget (the idle state has no session
@@ -310,10 +311,10 @@ For someone (human or AI) picking this up:
   cues for the `Done`/`Needs Approval` states. See "Audio cues" above.
 - **`~/.claude-status-card/events.ndjson`** — the shared event log (data dir
   is `~/.claude-status-card/`). Not in the repo; created at runtime.
-- **`~/.claude-status-card/icon-map.json`** — persisted repo→icon
-  assignments, written by `preload.js`. Not in the repo; created at runtime.
-  See "Repository icons" below — this is also the manual-override entry
-  point.
+- **`~/.claude-status-card/icon-map.json`** — persisted repo→icon and
+  repo→color-hue assignments, written by `preload.js`. Not in the repo;
+  created at runtime. See "Repository icons" below — this is also the
+  manual-override entry point.
 - **`hooks-snippet.json`** — reference copy of the `"hooks"` block to merge
   into `~/.claude/settings.json` by hand; see "Install" above. `install.ps1`
   builds the same structure natively rather than parsing this file, since
@@ -384,13 +385,33 @@ that repo:
   can also still hand-edit `assignments` in `icon-map.json` directly
   (`repoKey: iconName`) — useful for scripting or bulk changes — and restart
   the widget to pick up a hand-edit.
-- **Colour is still a hash**, independent of icon assignment: `src/index.html`
-  hashes the repo key (FNV-1a) via `iconColorFor`:
-  `hsl(hashStr("hue:"+cwd) % 360, 60%, 72%)`. Deterministic, not random — the
-  same repo always gets the same hue — and uses high lightness so it always
-  reads clearly on the dark card. Two repos can still coincidentally share a
-  hue; that's fine, since the icon shape (now guaranteed unique below the
-  pool size) and the repo-name label are the real disambiguators.
+- **Colour defaults to a hash, independent of icon assignment**, but can be
+  overridden: `src/index.html` hashes the repo key (FNV-1a) via
+  `iconColorFor`: `hsl(hashStr("hue:"+cwd) % 360, 60%, 72%)`. Deterministic,
+  not random — the same repo always gets the same hue — and uses high
+  lightness so it always reads clearly on the dark card. Two repos can still
+  coincidentally share a hue by default; that's fine, since the icon shape
+  (guaranteed unique below the pool size) and the repo-name label are the
+  real disambiguators.
+  - **Manual override:** right-click a card's icon → "Change color" for a
+    submenu of 12 fixed hues, 30° apart (red, orange, yellow, lime, green,
+    teal, cyan, sky, blue, purple, magenta, pink — `COLOR_HUES` in
+    `src/main.js`), each rendered as a small solid-color swatch (a raw BGRA
+    bitmap built directly in Node via `hueSwatchIcon`/`hslToRgb` — native
+    menu items can't take arbitrary CSS, and a flat color square doesn't need
+    real SVG rasterization the way the icon swatches would). Deliberately
+    **not** a free-pick color wheel: only the *hue* is choosable — saturation
+    and lightness stay the same fixed 60%/72% the hash-based default already
+    uses, so an override can never accidentally end up too dark or muddy to
+    read on the card, without having to clamp an arbitrary picked color after
+    the fact. Persisted alongside icon assignments in the same
+    `~/.claude-status-card/icon-map.json`, under a sibling `colors: {
+    repoKey: hue }` map — same sole-writer convention (`src/index.html`
+    applies and persists via `onSetColor`; `main.js` only reads it, to mark
+    the current hue with a radio dot). Unlike icon shape, there's no
+    standalone left-click entry point for color — only reachable via the
+    right-click submenu, to avoid overloading the icon-click interaction with
+    a second, unrelated menu.
 - The icon set is whatever `*.svg` files are in `assets/icons/` at launch;
   the assignment adapts automatically to any number of icons. **To change the
   set:** add/rename/replace files (flat, monochrome, ideally a shared

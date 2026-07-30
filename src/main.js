@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, screen, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, screen, shell, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -50,6 +50,81 @@ function buildIconMenuTemplate(repoKey) {
     type: "radio",
     checked: name === current,
     click: () => { if (win) win.webContents.send("set-icon", { repoKey, name }); },
+  }));
+}
+
+// A fixed set of 12 evenly-spaced hues (30° apart) — the user picks a
+// general color direction only; saturation/lightness stay exactly what
+// iconColorFor's hash-based default already uses (60%/72%), which is
+// deliberately clamped so a card always reads clearly on the dark
+// background. A free-pick wheel would let someone choose a muddy or
+// near-black color; fixing S/L and only letting hue vary sidesteps that
+// entirely instead of having to clamp an arbitrary picked color after the
+// fact.
+const COLOR_HUES = [
+  { hue: 0, name: "Red" }, { hue: 30, name: "Orange" }, { hue: 60, name: "Yellow" },
+  { hue: 90, name: "Lime" }, { hue: 120, name: "Green" }, { hue: 150, name: "Teal" },
+  { hue: 180, name: "Cyan" }, { hue: 210, name: "Sky" }, { hue: 240, name: "Blue" },
+  { hue: 270, name: "Purple" }, { hue: 300, name: "Magenta" }, { hue: 330, name: "Pink" },
+];
+const COLOR_SATURATION = 0.60;
+const COLOR_LIGHTNESS = 0.72;
+
+// Read-only here for the same reason as readIconAssignments: the renderer
+// is the sole writer of icon-map.json's `colors` map.
+function readColorAssignments() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ICON_MAP_FILE, "utf8"));
+    return parsed.colors && typeof parsed.colors === "object" ? parsed.colors : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+// Standard HSL->RGB, h in degrees, s/l in 0-1, returns 0-255 int channels.
+function hslToRgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r1, g1, b1;
+  if (h < 60) { [r1, g1, b1] = [c, x, 0]; }
+  else if (h < 120) { [r1, g1, b1] = [x, c, 0]; }
+  else if (h < 180) { [r1, g1, b1] = [0, c, x]; }
+  else if (h < 240) { [r1, g1, b1] = [0, x, c]; }
+  else if (h < 300) { [r1, g1, b1] = [x, 0, c]; }
+  else { [r1, g1, b1] = [c, 0, x]; }
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255),
+  };
+}
+
+// A small solid-color square for each hue choice, since native menu items
+// only support a bitmap icon, not arbitrary CSS -- built directly as a raw
+// BGRA buffer (nativeImage's expected format), not by rasterizing an SVG,
+// since a flat color square doesn't need one.
+function hueSwatchIcon(hue) {
+  const { r, g, b } = hslToRgb(hue, COLOR_SATURATION, COLOR_LIGHTNESS);
+  const size = 16;
+  const buf = Buffer.alloc(size * size * 4);
+  for (let i = 0; i < size * size; i++) {
+    buf[i * 4] = b; buf[i * 4 + 1] = g; buf[i * 4 + 2] = r; buf[i * 4 + 3] = 255;
+  }
+  return nativeImage.createFromBuffer(buf, { width: size, height: size });
+}
+
+// Nested submenu (right-click an icon only, see buildMenu) -- selecting an
+// entry tells the renderer to apply and persist it (via "set-color"), same
+// single-writer convention as the icon menu.
+function buildColorMenuTemplate(repoKey) {
+  const current = readColorAssignments()[repoKey];
+  return COLOR_HUES.map(({ hue, name }) => ({
+    label: name,
+    icon: hueSwatchIcon(hue),
+    type: "radio",
+    checked: hue === current,
+    click: () => { if (win) win.webContents.send("set-color", { repoKey, hue }); },
   }));
 }
 
@@ -110,14 +185,18 @@ function createWindow() {
 // can always be controlled (and quit) from the window itself — not only from
 // the tray icon, which Windows often hides in the overflow. `repoKey`, when
 // present, means the right-click landed on a specific card's icon (see the
-// renderer's contextmenu handler), so a "Change icon" submenu is added.
+// renderer's contextmenu handler), so "Change icon"/"Change color" submenus
+// are added.
 function buildMenu(repoKey) {
   const template = [
     { label: "Clear all cards", click: () => { if (win) win.webContents.send("clear"); } },
     { label: "Reset position", click: () => resetPosition() },
   ];
   if (repoKey) {
-    template.push({ label: "Change icon", submenu: buildIconMenuTemplate(repoKey) });
+    template.push(
+      { label: "Change icon", submenu: buildIconMenuTemplate(repoKey) },
+      { label: "Change color", submenu: buildColorMenuTemplate(repoKey) },
+    );
   }
   template.push(
     { type: "separator" },
@@ -128,7 +207,6 @@ function buildMenu(repoKey) {
 
 function createTray() {
   // Use a generated 16x16 icon at runtime so we don't need a bundled asset.
-  const { nativeImage } = require("electron");
   const icon = nativeImage.createEmpty();
   tray = new Tray(icon.isEmpty() ? nativeImage.createFromDataURL(
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAJUlEQVR4AWNgGAWjYBSMglEwCkbBKBgFo2AUjIJRMApGwSggBQwAB1MAAP0jXlAAAAAASUVORK5CYII="

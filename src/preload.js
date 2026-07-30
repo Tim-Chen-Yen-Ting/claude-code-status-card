@@ -9,12 +9,17 @@ const os = require("os");
 const DATA_DIR = path.join(os.homedir(), ".claude-status-card");
 const ICON_MAP_FILE = path.join(DATA_DIR, "icon-map.json");
 
-// { assignments: { repoKey: iconName }, nextIndex: number } — persisted so a
-// repo keeps the same icon across widget restarts, and so a brand-new repo
-// gets the next unused icon in sequence rather than a random/hashed one that
-// could coincidentally collide with a repo you're already looking at. Also
-// doubles as the manual-override entry point: hand-edit `assignments` to pin
-// or swap icons (see "Repository icons" in the README).
+// { assignments: { repoKey: iconName }, nextIndex: number, colors: { repoKey:
+// hue } } — persisted so a repo keeps the same icon/color across widget
+// restarts, and so a brand-new repo gets the next unused icon in sequence
+// rather than a random/hashed one that could coincidentally collide with a
+// repo you're already looking at. Also doubles as the manual-override entry
+// point: hand-edit `assignments`/`colors` to pin or swap them (see
+// "Repository icons" in the README). `colors` maps to a hue in degrees
+// (0-360) only — saturation/lightness are fixed constants shared with the
+// hash-based default (see iconColorFor in index.html and COLOR_HUES in
+// main.js), so an override can't accidentally pick something that reads
+// poorly on the dark card.
 function loadIconMap() {
   try {
     const raw = fs.readFileSync(ICON_MAP_FILE, "utf8");
@@ -22,9 +27,10 @@ function loadIconMap() {
     return {
       assignments: parsed.assignments && typeof parsed.assignments === "object" ? parsed.assignments : {},
       nextIndex: Number.isInteger(parsed.nextIndex) ? parsed.nextIndex : 0,
+      colors: parsed.colors && typeof parsed.colors === "object" ? parsed.colors : {},
     };
   } catch (_) {
-    return { assignments: {}, nextIndex: 0 };
+    return { assignments: {}, nextIndex: 0, colors: {} };
   }
 }
 
@@ -82,6 +88,10 @@ contextBridge.exposeInMainWorld("pip", {
   // buildIconMenuTemplate) — the renderer applies the assignment and
   // persists it via saveIconMap, since it's the sole writer of icon-map.json.
   onSetIcon: (callback) => ipcRenderer.on("set-icon", (_e, { repoKey, name }) => callback(repoKey, name)),
+  // Fired when a color choice is picked from the right-click "Change color"
+  // submenu (main.js's buildColorMenuTemplate) — same convention as
+  // onSetIcon: the renderer applies and persists it.
+  onSetColor: (callback) => ipcRenderer.on("set-color", (_e, { repoKey, hue }) => callback(repoKey, hue)),
   resize: (height) => ipcRenderer.send("resize-window", { height }),
   drag: (dx, dy) => ipcRenderer.send("drag-window", { dx, dy }),
   // Full right-click menu (Clear all/Reset/Change icon submenu/Quit). Pass a

@@ -215,9 +215,7 @@
 
   // --- Repository icons ---------------------------------------------------
   // Icons represent repositories, not sessions: sessions in the same repo
-  // share an icon. Colour is still a deterministic hash of the repo path
-  // (stable, no persistence needed — collisions there are harmless since the
-  // repo-name label and icon shape already disambiguate).
+  // share an icon and colour.
   //
   // Icon *shape* assignment is sequential and persisted, not hashed: the
   // first-seen repo gets icon 0, the second gets icon 1, and so on, wrapping
@@ -231,9 +229,25 @@
   // via preload.js, so it survives widget restarts, and hand-editing that
   // file's `assignments` object is the manual-override entry point (pin a
   // repo to a specific icon, or swap two repos' icons) — see the README.
+  //
+  // Colour defaults to a deterministic hash of the repo path (collisions
+  // there are harmless on their own, since the repo-name label and
+  // guaranteed-unique icon shape already disambiguate), but can be
+  // overridden per repo via the right-click "Change color" menu — see
+  // onSetColor below. The override only ever picks a *hue*; saturation/
+  // lightness stay the same fixed 60%/72% the hash-based default uses, so a
+  // manually-picked color can't accidentally end up too dark/muddy to read
+  // on the card, the way a free-pick color wheel could.
   const ICON_NAMES = Object.keys(window.pip.icons || {}).sort();
   const iconAssignments = { ...(window.pip.iconMap && window.pip.iconMap.assignments) };
+  const colorAssignments = { ...(window.pip.iconMap && window.pip.iconMap.colors) };
   let nextIconIndex = (window.pip.iconMap && window.pip.iconMap.nextIndex) || 0;
+
+  function persistIconMap() {
+    if (window.pip.saveIconMap) {
+      window.pip.saveIconMap({ assignments: iconAssignments, nextIndex: nextIconIndex, colors: colorAssignments });
+    }
+  }
 
   function hashStr(s) {
     let h = 2166136261;
@@ -254,9 +268,7 @@
     const name = ICON_NAMES[nextIconIndex % ICON_NAMES.length];
     nextIconIndex++;
     iconAssignments[key] = name;
-    if (window.pip.saveIconMap) {
-      window.pip.saveIconMap({ assignments: iconAssignments, nextIndex: nextIconIndex });
-    }
+    persistIconMap();
     return name;
   }
   function iconSvgFor(repo) {
@@ -267,9 +279,12 @@
     return window.pip.icons[name];
   }
   function iconColorFor(repo) {
+    const key = repoKey(repo);
     // Deterministic per-repo hue at high lightness so it always reads clearly
-    // on the dark card (never dark/gray/black).
-    return `hsl(${hashStr("hue:" + repoKey(repo)) % 360} 60% 72%)`;
+    // on the dark card (never dark/gray/black) — overridden by a manually
+    // picked hue if this repo has one (colorAssignments), same S/L either way.
+    const hue = key in colorAssignments ? colorAssignments[key] : hashStr("hue:" + key) % 360;
+    return `hsl(${hue} 60% 72%)`;
   }
 
   // --- Audio cues -----------------------------------------------------------
@@ -442,21 +457,26 @@
 
   render();
 
-  // --- Icon override, via native menus (main.js) --------------------------
-  // Lets you override a repo's icon from the widget itself, instead of
-  // hand-editing icon-map.json. Both entry points pop up an actual OS
-  // context menu (built in main.js, since only the main process can call
-  // Menu.popup) rather than a custom in-page control:
+  // --- Icon/color override, via native menus (main.js) --------------------
+  // Lets you override a repo's icon or color from the widget itself, instead
+  // of hand-editing icon-map.json. Both pop up an actual OS context menu
+  // (built in main.js, since only the main process can call Menu.popup)
+  // rather than a custom in-page control:
   //  - Left-click a card's icon: standalone icon-choice menu at the cursor.
-  //  - Right-click a card's icon: the full menu, with "Change icon" as a
-  //    nested submenu (only added when the click landed on an icon).
-  // Either way, choosing an entry fires "set-icon" back here, and this
-  // renderer — the sole writer of icon-map.json — applies and persists it.
+  //  - Right-click a card's icon: the full menu, with "Change icon" and
+  //    "Change color" as nested submenus (only added when the click landed
+  //    on an icon).
+  // Either way, choosing an entry fires "set-icon"/"set-color" back here, and
+  // this renderer — the sole writer of icon-map.json — applies and persists
+  // it.
   window.pip.onSetIcon((repoKeyStr, name) => {
     iconAssignments[repoKeyStr] = name;
-    if (window.pip.saveIconMap) {
-      window.pip.saveIconMap({ assignments: iconAssignments, nextIndex: nextIconIndex });
-    }
+    persistIconMap();
+    render();
+  });
+  window.pip.onSetColor((repoKeyStr, hue) => {
+    colorAssignments[repoKeyStr] = hue;
+    persistIconMap();
     render();
   });
 
