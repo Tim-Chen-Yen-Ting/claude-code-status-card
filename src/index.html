@@ -85,16 +85,47 @@
     cursor: pointer; opacity: 0.55;
   }
   #quit:hover { opacity: 1; background: rgba(255,80,80,0.85); color: #fff; }
+  #volume-row {
+    width: 240px; box-sizing: border-box;
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 12px;
+    margin: 0;
+    border-radius: 12px;
+    background: rgba(28,28,32,0.92);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  #volume-row .vol-icon { flex: 0 0 auto; width: 13px; height: 13px; color: #999; display: block; }
+  #volume-row input[type="range"] {
+    flex: 1 1 auto; -webkit-appearance: none; appearance: none;
+    height: 3px; border-radius: 2px;
+    background: rgba(255,255,255,0.18);
+    outline: none; margin: 0;
+  }
+  #volume-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #3b82f6; cursor: pointer;
+  }
+  #volume-row .vol-pct {
+    flex: 0 0 auto; width: 30px; text-align: right;
+    font-size: 10px; color: #888;
+  }
 </style>
 </head>
 <body>
   <div id="container">
     <div id="empty"><span id="quit" title="Quit widget">⏻</span>Idle — no active sessions</div>
   </div>
+  <div id="volume-row" title="Audio cue volume">
+    <svg class="vol-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M3 10v4h4l5 5V5L7 10H3z"/><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.06c1.48-.74 2.5-2.26 2.5-4.03z" opacity="0.7"/></svg>
+    <input type="range" id="volume-slider" min="0" max="100" value="100" />
+    <span class="vol-pct" id="volume-pct">100%</span>
+  </div>
 
 <script>
   const container = document.getElementById("container");
   const emptyEl = document.getElementById("empty");
+  const volumeRow = document.getElementById("volume-row");
 
   // Retire a session's card this long after it reports Stop, unless it
   // emits a new event first (e.g. the next prompt in the same session).
@@ -292,12 +323,36 @@
   // attention even if you're not looking at the screen. Loaded once at
   // startup; `.currentTime = 0` before each play lets a sound retrigger
   // immediately even if the previous playback hasn't finished (e.g. two
-  // sessions finish back to back). `Audio.volume` defaults to 1.0, which is
-  // a multiplier *relative to* the system's current output level, not an
-  // absolute value — so this never assumes or overrides the user's actual
-  // volume (no surprise loud sounds in a quiet room).
+  // sessions finish back to back). `Audio.volume` is a 0-1 multiplier
+  // *relative to* the system's current output level, not an absolute value
+  // — so even at the slider's max (1.0) this never overrides the user's
+  // actual system volume, only ever scales relative to it. Driven by the
+  // always-visible volume bar (#volume-row) below, persisted across
+  // restarts via window.pip.volume/saveVolume (see preload.js) so it
+  // doesn't reset to 100% every launch.
   const SOUND_APPROVAL = new Audio("../assets/sound/approval.mp3");
   const SOUND_DONE = new Audio("../assets/sound/finish.mp3");
+
+  const volumeSlider = document.getElementById("volume-slider");
+  const volumePct = document.getElementById("volume-pct");
+  let currentVolumePct = Number.isFinite(window.pip.volume) ? window.pip.volume : 100;
+
+  function applyVolume() {
+    const v = currentVolumePct / 100;
+    SOUND_APPROVAL.volume = v;
+    SOUND_DONE.volume = v;
+  }
+  volumeSlider.value = currentVolumePct;
+  volumePct.textContent = currentVolumePct + "%";
+  applyVolume();
+
+  volumeSlider.addEventListener("input", () => {
+    currentVolumePct = Number(volumeSlider.value);
+    volumePct.textContent = currentVolumePct + "%";
+    applyVolume();
+    if (window.pip.saveVolume) window.pip.saveVolume(currentVolumePct);
+  });
+
   function playSound(audio) {
     try {
       audio.currentTime = 0;
@@ -334,11 +389,19 @@
     clearHint(key);
     const existing = sessions.get(key) || {};
     const prevKind = existing.kind;
-    // Pin to the session's first-ever reported cwd (typically from
-    // UserPromptSubmit, which is always the session's real root) rather
-    // than always taking the newest one — a later PreToolUse/PostToolUse can
-    // report a subdirectory the assistant is currently working in, which
-    // would otherwise silently drift the repo identity mid-session.
+    // Pin to the session's first-ever-seen-by-this-widget-process cwd
+    // rather than always taking the newest one — a secondary safety net
+    // only. The durable fix now lives upstream in hook-relay.cjs
+    // (findSessionRootCwd), which resolves every non-UserPromptSubmit
+    // event's cwd against that session's *earliest* UserPromptSubmit read
+    // fresh from events.ndjson on every hook invocation — correct even
+    // across a widget restart, which this in-memory pin alone can't be
+    // (it resets to empty on every launch, so a session that's been running
+    // continuously since before a restart would otherwise re-pin to
+    // whatever subdirectory its first post-restart event happens to report;
+    // confirmed in practice). This still catches the case where the relay
+    // itself couldn't find any prior UserPromptSubmit either (e.g. it's
+    // been trimmed out of the 500-line window).
     const cwd = existing.cwd || ev.cwd || "";
     // Use the latest prompt as the session's display name — refreshes each
     // turn so the card reflects what the thread is doing right now.
@@ -363,17 +426,45 @@
         newState = { ...base, kind: "working", label: "Thinking…", detail: (ev.tool_name || "") + " done", retireAt: null };
         break;
       case "Notification":
+        // Claude Code fires this hook for two unrelated things, both with
+        // hook_event_name "Notification" and only distinguishable by
+        // `message` text: an actual permission prompt ("Claude needs your
+        // permission") and a plain idle nudge ("Claude is waiting for your
+        // input", sent ~60s into an already-finished turn — not a blocking
+        // approval at all). Escalating on the idle nudge produced a false
+        // red ping on sessions that had already Stopped minutes earlier.
+        // Only the permission variant should ever turn the card red.
+        if (!/permission/i.test(ev.message || "")) return;
         newState = { ...base, kind: "approval", label: "Needs you!", detail: ev.message || "Approval required", retireAt: null };
         break;
       case "SubagentStop":
         // A background subagent/Task finished its own sub-conversation —
-        // the main session is very likely still working (synthesizing
+        // normally the main session is still working (synthesizing
         // results, spawning more subagents, continuing the workflow), not
-        // actually done. Treating this as "done" used to flip the card
-        // green and play the finish sound on every individual subagent
-        // completion during a multi-agent workflow, even while the overall
-        // session kept running — misleading, and noisy. Stay "Working";
-        // only a real Stop means the turn is actually over.
+        // actually done, so this keeps the card "Working" rather than
+        // flipping it green like Stop does.
+        //
+        // But a Task can keep running *after* the main turn's Stop already
+        // fired and control returned to you (a straggler subagent), so its
+        // SubagentStop can land seconds-to-minutes after the session is
+        // genuinely done. Blindly applying "still working" in that case
+        // silently dragged an already-green (or already-red, from a real
+        // Notification) card back to blue with no real work happening —
+        // observed as the done/approval state "reverting by itself". If
+        // the session already Stopped, a late SubagentStop is just that
+        // straggler cleaning up — ignore it instead of overriding the
+        // more authoritative, more recent state. Same logic applies to a
+        // genuine pending approval — a straggler subagent finishing
+        // shouldn't silently clear a real "Needs Approval" either.
+        //
+        // Also: never let SubagentStop create a card out of nothing. If the
+        // session isn't already known (never seen, or already auto-retired
+        // by RETIRE_AFTER_MS — retirement deletes the map entry entirely,
+        // not just the visible card), a straggler SubagentStop has no
+        // "still working" state to continue — without this check it
+        // resurrected an already-retired, actually-finished session as a
+        // brand new blue "Working" card out of thin air.
+        if (!existing.kind || existing.kind === "done" || existing.kind === "approval") return;
         newState = { ...base, kind: "working", label: "Thinking…", detail: "Subagent finished", retireAt: null };
         break;
       case "Stop":
@@ -397,9 +488,23 @@
 
     if (sessions.size === 0) {
       emptyEl.style.display = "block";
+      // Hidden at Idle, not just visually — the volume bar only shows once
+      // there's at least one card. Resizing to match matters just as much
+      // as hiding it: leaving the window at its previous (taller) bounds
+      // while only the idle pill is visible would leave an invisible
+      // clickable region below it with no visual cue at all, the same class
+      // of bug as the drag-drift issue (see "Window bounds drift under
+      // fractional DPI scaling" in the README) — the window's real bounds
+      // silently outgrowing what's actually rendered.
+      volumeRow.style.display = "none";
+      requestAnimationFrame(() => {
+        const h = Math.ceil(container.scrollHeight);
+        if (window.pip.resize) window.pip.resize(h);
+      });
       return;
     }
     emptyEl.style.display = "none";
+    volumeRow.style.display = "flex";
 
     const esc = (t) => String(t || "").replace(/[&<>"]/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -432,9 +537,11 @@
       container.appendChild(card);
     }
 
-    // Ask the main process to size the window to fit the cards.
+    // Ask the main process to size the window to fit the cards, plus the
+    // always-visible volume bar below them (a sibling of #container, so its
+    // height isn't part of container.scrollHeight on its own).
     requestAnimationFrame(() => {
-      const h = Math.ceil(container.scrollHeight);
+      const h = Math.ceil(container.scrollHeight) + volumeRow.offsetHeight;
       if (window.pip.resize) window.pip.resize(h);
     });
   }

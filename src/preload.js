@@ -8,6 +8,33 @@ const os = require("os");
 // than shared).
 const DATA_DIR = path.join(os.homedir(), ".claude-status-card");
 const ICON_MAP_FILE = path.join(DATA_DIR, "icon-map.json");
+const VOLUME_FILE = path.join(DATA_DIR, "volume.json");
+
+// { volume: 0-100 } — the audio-cue volume set via the always-visible
+// slider in src/index.html (#volume-row). A separate small file rather than
+// folded into icon-map.json: distinct concern (audio preference, not
+// per-repo icon/color state), kept simple as its own single-purpose file
+// like events.ndjson/icon-map.json each are.
+function loadVolume() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(VOLUME_FILE, "utf8"));
+    return Number.isFinite(parsed.volume) ? Math.max(0, Math.min(100, parsed.volume)) : 100;
+  } catch (_) {
+    return 100;
+  }
+}
+
+function saveVolume(volume) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmpFile = VOLUME_FILE + ".tmp";
+    fs.writeFileSync(tmpFile, JSON.stringify({ volume }));
+    fs.renameSync(tmpFile, VOLUME_FILE);
+  } catch (_) {
+    // Best-effort — losing this just means the slider resets to 100% next
+    // launch, not a functional break.
+  }
+}
 
 // { assignments: { repoKey: iconName }, nextIndex: number, colors: { repoKey:
 // hue } } — persisted so a repo keeps the same icon/color across widget
@@ -82,6 +109,8 @@ contextBridge.exposeInMainWorld("pip", {
   icons: loadIcons(),
   iconMap: loadIconMap(),
   saveIconMap: (map) => saveIconMap(map),
+  volume: loadVolume(),
+  saveVolume: (volume) => saveVolume(volume),
   onEvents: (callback) => ipcRenderer.on("events", (_e, events) => callback(events)),
   onClear: (callback) => ipcRenderer.on("clear", () => callback()),
   // Fired when an icon choice is picked from either native menu (main.js's

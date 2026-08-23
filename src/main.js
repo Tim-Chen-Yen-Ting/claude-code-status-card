@@ -139,6 +139,9 @@ let lastTs = null;
 
 const WIDTH = 240;
 const HEIGHT = 260;
+// Tracks the last intentionally-set height (from resize-window), so
+// drag-window can re-assert it on every move — see the comment there.
+let lastKnownHeight = HEIGHT;
 
 function createWindow() {
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
@@ -217,7 +220,12 @@ function createTray() {
 
 function resetPosition() {
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-  win.setPosition(sw - WIDTH - 24, sh - HEIGHT - 24);
+  // setBounds with explicit width/lastKnownHeight, not a bare setPosition —
+  // same drift-prevention reasoning as drag-window below — and
+  // lastKnownHeight (the current actual content height), not the HEIGHT
+  // constant, so this doesn't wrong-size the window away from however many
+  // cards are really showing right now.
+  win.setBounds({ x: sw - WIDTH - 24, y: sh - lastKnownHeight - 24, width: WIDTH, height: lastKnownHeight });
 }
 
 // Best-effort "jump to that repo's window" for a genuine (non-drag) click on
@@ -388,6 +396,14 @@ function watchEvents() {
 
 ipcMain.on("show-menu", (_e, repoKey) => {
   if (win) buildMenu(repoKey).popup({ window: win });
+  // Temporary — logs cursor position alongside window bounds so a genuine
+  // bounds mismatch (cursor outside winBounds when this still fired) can be
+  // told apart from something else entirely.
+  try {
+    const cursor = screen.getCursorScreenPoint();
+    const line = `${new Date().toISOString()} show-menu cursor=${JSON.stringify(cursor)} winBounds=${JSON.stringify(win ? win.getBounds() : null)}\n`;
+    fs.appendFileSync(BOUNDS_DEBUG_LOG, line);
+  } catch (_) {}
 });
 
 // Left-clicking a card's icon directly: just the icon choices, standalone,
@@ -400,20 +416,54 @@ ipcMain.on("quit-app", () => app.quit());
 
 ipcMain.on("focus-repo", (_e, repoName) => focusRepoWindow(repoName));
 
+// Temporary debug log while tracking down a reported mismatch between
+// where the widget visually is after a drag and where its clickable region
+// actually responds — remove once confirmed. Logs real bounds plus every
+// display Electron knows about, so a multi-monitor/DPI-scaling mismatch
+// would show up directly instead of being guessed at.
+const BOUNDS_DEBUG_LOG = path.join(DATA_DIR, "bounds-debug.log");
+function logBounds(label) {
+  try {
+    const b = win.getBounds();
+    const displays = screen.getAllDisplays().map((d) => ({
+      bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor, id: d.id,
+    }));
+    const line = `${new Date().toISOString()} ${label} winBounds=${JSON.stringify(b)} displays=${JSON.stringify(displays)}\n`;
+    fs.appendFileSync(BOUNDS_DEBUG_LOG, line);
+  } catch (_) {}
+}
+
 ipcMain.on("drag-window", (_e, { dx, dy }) => {
   if (!win) return;
-  const [x, y] = win.getPosition();
-  win.setPosition(x + dx, y + dy);
+  const b = win.getBounds();
+  // Explicitly re-assert width/height on every move, not just reposition —
+  // confirmed via bounds-debug.log that Windows lets a frameless window's
+  // logical bounds drift under fractional DPI scaling (scaleFactor 1.5 in
+  // the reported case) across many rapid setPosition calls in a single drag
+  // gesture: width crept from 240 to 302+, height grew similarly, with zero
+  // resize-window calls involved. Since the *visible* card content stays a
+  // fixed 240px (CSS), that drift silently grows an invisible clickable
+  // region beyond where the widget visually appears, with no visual cue at
+  // all — reported as "dragged it away but it's still clickable in the old
+  // spot". Setting the exact intended bounds every tick (not a relative
+  // delta via setPosition) prevents any accumulation instead of only
+  // correcting it after the fact.
+  win.setBounds({ x: b.x + dx, y: b.y + dy, width: WIDTH, height: lastKnownHeight });
+  logBounds("drag");
 });
 
 ipcMain.on("resize-window", (_e, { height }) => {
   if (!win) return;
   const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   const newH = Math.max(60, Math.min(Math.round(height), screenH - 24));
+  lastKnownHeight = newH;
   const b = win.getBounds();
-  if (b.height === newH) return;
+  if (b.height === newH && b.width === WIDTH) return;
   // Keep the bottom edge fixed so the widget grows upward from its corner.
-  win.setBounds({ x: b.x, y: b.y + b.height - newH, width: b.width, height: newH });
+  // Also re-asserts width (not just b.width, which could itself already be
+  // drifted) for the same reason as drag-window above.
+  win.setBounds({ x: b.x, y: b.y + b.height - newH, width: WIDTH, height: newH });
+  logBounds("resize");
 });
 
 app.whenReady().then(() => {

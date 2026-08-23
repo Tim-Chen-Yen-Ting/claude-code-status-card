@@ -152,15 +152,35 @@ icon identifies *which repo*, the indicator shows *what state*.
   `src/index.html`), unless the session sends another event first.
 - "Needs Approval" is often **inferred**, not signalled — see the limitation
   in "Things you should know" on the `Notification` hook.
-- **`SubagentStop` is treated as still-`Working`, not `Done`.** A background
+- **`SubagentStop` only moves the card to `Working` when it's already in a
+  working/neutral state — never downgrading `Done` or `Needs Approval`, and
+  never resurrecting a session that isn't already known.** A background
   subagent/Task finishing its own sub-conversation doesn't mean the overall
   session is done — the main turn is very likely still running (spawning
-  more subagents, synthesizing results, continuing the workflow). Only a
-  real `Stop` (the main turn actually ending, control returning to you)
-  flips the card green. Treating them the same used to flip the card green
-  — and play the finish sound — on *every individual subagent completion*
-  during a multi-agent workflow, even while the session kept working in the
-  background: misleading and, with several subagents, noisy.
+  more subagents, synthesizing results, continuing the workflow), so
+  treating `SubagentStop` the same as `Stop` used to flip the card green —
+  and play the finish sound — on *every individual subagent completion*
+  during a multi-agent workflow, misleading and noisy. But `SubagentStop`
+  turned out to be **unreliable as a "still working" signal in its own
+  right**, confirmed from a real session log: it can fire seconds after a
+  genuine `Stop` (a straggler subagent finishing after the main turn and
+  control already returned to you) and it can fire many minutes into idle
+  time with no relation to real activity at all — this turned out to be
+  Claude Code's own [Session
+  recap](https://code.claude.com/docs/en/interactive-mode#session-recap)
+  feature (a one-line summary generated in the background ~3+ idle minutes
+  after the terminal loses focus), which appears to internally run something
+  that emits a real `SubagentStop` despite having nothing to do with your
+  actual conversation. Naively applying "still working" for *any*
+  `SubagentStop` silently dragged an already-green or already-red card back
+  to blue with no real work happening — reported as the done/approval state
+  "reverting by itself" a few minutes after it should have stayed put.
+  `applyEvent` in `src/index.html` now guards: `if (!existing.kind ||
+  existing.kind === "done" || existing.kind === "approval") return;` — a
+  `SubagentStop` is only meaningful when the session was already known and
+  already `working`/`tool`, where "still working" is harmless either way;
+  every other case is a no-op, leaving the more authoritative, more recent
+  state alone.
 
 #### Audio cues
 
@@ -183,12 +203,27 @@ approval inference doesn't correspond to any single hook firing.
   `kind` to its new one) — not on every re-render of an already-red/green
   card, so it won't replay on the periodic retirement sweep or an unrelated
   event.
-- `Audio.volume` is left at its default (`1.0`), which is a multiplier
-  *relative to* the system's current output level, not an absolute value —
-  this never assumes or overrides your actual volume setting.
-- To disable: remove/empty those two files, or comment out the
-  `playTransitionSound` calls in `applyEvent`/`escalateToApproval`. To swap
-  a sound: replace the file at the same path (any format Chromium's
+- **Volume is user-adjustable**, via the always-visible slider bar below the
+  cards (`#volume-row` in `src/index.html`, `0`-`100`, defaults to `100`).
+  `Audio.volume` is a `0`-`1` multiplier *relative to* the system's current
+  output level, not an absolute value — so even at the slider's max this
+  never overrides your actual system volume, only ever scales relative to
+  it. Persisted across restarts to `~/.claude-status-card/volume.json`
+  (`{ volume: N }`) via `window.pip.volume`/`saveVolume` in `src/preload.js`
+  — a separate small file rather than folded into `icon-map.json`, since
+  it's a distinct concern (an audio preference, not per-repo state). The
+  slider is a real HTML `<input type="range">`, not a native OS menu item —
+  unlike icon/color choice, a continuous 0-100% control has no native-menu
+  equivalent, so this one genuinely needs custom UI. Sibling to
+  `#container`, not inside it, so it stays visible even when the card list
+  scrolls; `render()`'s resize call adds `volumeRow.offsetHeight` to
+  `container.scrollHeight` accordingly (see "Window bounds drift under
+  fractional DPI scaling" above for why `main.js` always asserts an exact
+  height rather than trusting incremental changes).
+- To disable: remove/empty `finish.mp3`/`approval.mp3`, or comment out the
+  `playTransitionSound` calls in `applyEvent`/`escalateToApproval` (the
+  slider itself has no separate "off" position beyond dragging it to `0`).
+  To swap a sound: replace the file at the same path (any format Chromium's
   `<audio>` supports — mp3/wav/ogg — works, since the extension is only
   used to pick a codec, not hardcoded elsewhere).
 
@@ -315,6 +350,9 @@ For someone (human or AI) picking this up:
   repo→color-hue assignments, written by `preload.js`. Not in the repo;
   created at runtime. See "Repository icons" below — this is also the
   manual-override entry point.
+- **`~/.claude-status-card/volume.json`** — persisted audio-cue volume
+  (`{ volume: 0-100 }`), written by `preload.js`. Not in the repo; created
+  at runtime. See "Audio cues" above.
 - **`hooks-snippet.json`** — reference copy of the `"hooks"` block to merge
   into `~/.claude/settings.json` by hand; see "Install" above. `install.ps1`
   builds the same structure natively rather than parsing this file, since
@@ -340,6 +378,30 @@ Node builtins — with the sandbox on, the preload fails to load entirely,
 to disable here because the widget only ever loads local, trusted files (no
 remote web content). If you re-enable the sandbox, move icon loading into the
 main process and pass the SVGs to the renderer over IPC instead.
+
+#### Window bounds drift under fractional DPI scaling
+
+`drag-window` and `resize-window` in `src/main.js` always set the window's
+**full, exact** bounds (`win.setBounds({ x, y, width: WIDTH, height:
+lastKnownHeight })`) rather than moving it with a relative
+`win.setPosition(x + dx, y + dy)` call. That used to be exactly how dragging
+worked, and it was wrong: on Windows with fractional DPI scaling (confirmed
+at `scaleFactor: 1.5`), repeated rapid `setPosition` calls during a single
+drag gesture (mousemove fires many times a second) let the window's logical
+bounds drift — measured directly via a debug log, `width` crept from `240`
+to `302+` and `height` grew similarly, purely from dragging, with zero
+`resize-window` calls involved. Since the *visible* card content is a fixed
+240px (CSS) regardless of the underlying window's real bounds, that drift
+silently grew an invisible clickable region around the widget with no
+visual cue at all — reported as "I dragged it to the left side of the
+screen and it's still clickable in the middle." `lastKnownHeight` (a
+module-level var, updated whenever `resize-window` sets a new height)
+exists so `drag-window` has the correct height to re-assert on every move
+without needing to derive it from potentially-already-drifted current
+bounds. `resetPosition()` (the right-click menu's "Reset position") uses
+the same explicit-bounds pattern for the same reason, and asserts
+`lastKnownHeight` rather than the `HEIGHT` constant, so it doesn't
+wrong-size the window away from however many cards are actually showing.
 
 ### Repository icons
 
@@ -434,20 +496,87 @@ Each line of `events.ndjson` is one JSON object:
 | `prompt`     | the prompt text (on `UserPromptSubmit`), used as the card name |
 | `command`    | Bash command text (on `PreToolUse` for the `Bash` tool), used to recognize known read-only commands |
 
-`shortCwd` in `src/hook-relay.cjs` only normalizes slashes now — it does
-**not** truncate the path. An earlier version anchored on just the first two
+`shortCwd` in `src/hook-relay.cjs` only normalizes slashes — it does **not**
+truncate the path. An earlier version anchored on just the first two
 segments (drive + top-level folder) to dodge a hook payload `cwd` that can
 point at a subdirectory a tool is currently working in, which changes depth
 turn to turn. That broke any repo not sitting directly at a drive root (e.g.
 `C:\Users\...\Projects\my-repo` truncated to `C:\Users`, never the actual
 repo name) — wrong for icon assignment, the `.cwd` label, and
 window-navigation matching (see "Click-to-focus a repo's window" below)
-alike. The real fix lives in the renderer instead: `applyEvent` in
-`src/index.html` pins each session to its **first-ever reported** `cwd`
-(`existing.cwd || ev.cwd`, not the other way around) — typically from
-`UserPromptSubmit`, which is always the session's real root — so a later
-`PreToolUse`/`PostToolUse` reporting a deeper subdirectory can't silently
-drift the repo identity mid-session.
+alike.
+
+The durable fix lives in the relay, not the renderer: `findSessionRootCwd`
+in `src/hook-relay.cjs` resolves every non-`UserPromptSubmit` event's `cwd`
+against that session's **earliest** `UserPromptSubmit`, read fresh from
+`events.ndjson` on every hook invocation, rather than trusting whatever
+directory the current tool call happens to be operating in. *Earliest*, not
+most recent, matters: per Claude Code's own Bash tool docs, a `cd` in the
+main session carries over to later Bash commands for the rest of the
+session (as long as it stays inside the project directory), so a *later*
+`UserPromptSubmit`'s own `cwd` can just as legitimately already be drifted
+to wherever an earlier `cd` left the session — only the session's first
+`UserPromptSubmit` is guaranteed to predate any `cd` at all. Falls back to
+the raw payload `cwd` if no `UserPromptSubmit` is found for that session in
+the current 500-line window (its very first-ever event, or a session long
+enough that even its first `UserPromptSubmit` has aged out) — best effort,
+since there's no more history left to consult at that point.
+
+An earlier version of this fix pinned each session to its first-ever
+reported `cwd` **in the renderer** (`applyEvent` in `src/index.html`:
+`existing.cwd || ev.cwd`, not the other way around) instead of in the relay.
+That's still in place as a secondary safety net, but it isn't sufficient on
+its own: the pin lives only in the widget's in-memory session map, which is
+wiped on every restart (deliberately, so a fresh launch doesn't resurrect
+stale sessions — see below). A Claude Code session that's been running
+continuously since before a widget restart doesn't restart alongside it, so
+if the widget happens to come back up while that session is mid-tool-call
+deep in a subdirectory, *that subdirectory* becomes the new
+"first-ever-seen-by-this-process root" — confirmed in practice: corrupted
+both the repo-name label and the icon-identity key for a session that had
+been running for hours across a widget restart. Resolving the root at write
+time in the relay, from durable history on disk, is correct regardless of
+whether any widget process was even running to see the session's real
+first prompt.
+
+**A session's own launch directory still isn't necessarily "the project"
+you think of it as, though.** If you `cd` into a subdirectory before
+starting a Claude Code session — e.g. one session started from `CORE/RF`,
+another from `tools/door_toolkit`, another from the project root directly —
+each of those is a genuinely different, correctly-resolved session root by
+everything above, but they're all still *different strings*, so each one
+got treated as an entirely separate "repo" for icon assignment. Confirmed
+in practice: one real project fragmented into **9** separately-icon'd
+entries in `icon-map.json`, purely from being worked on via sessions
+launched from 9 different subdirectories — reported as "the icon keeps
+changing" for what was, to the user, obviously one project the whole time.
+
+`findProjectRoot` in `src/hook-relay.cjs` fixes this by walking *up* from
+the resolved session root looking for the nearest ancestor that looks like
+a project root: a `.git` folder, or a `CLAUDE.md` file. `.git` is the
+standard signal; `CLAUDE.md` is Claude Code's own per-project instructions
+convention, and turned out to be the actually-present marker for the real
+project that surfaced this bug — it had no `.git` at all, but a `CLAUDE.md`
+sitting exactly at the directory the user considered "the project" root.
+Stops at the *nearest* match walking upward, so a repo nested inside an
+unrelated parent folder (e.g. a git repo sitting inside a plain
+Downloads-style folder with no marker of its own) still keeps its own
+identity instead of collapsing into that parent — confirmed against a real
+case in the same data: `Phygtl/TagAlng-Backend` (its own `.git`) correctly
+stays distinct from `Phygtl` (no marker of its own, not a git repo).
+Falls back to the unchanged session root if no marker is found anywhere in
+the ancestry, same as today's behavior for a plain folder that isn't
+otherwise recognizable as a project.
+
+Applies to **every** event, not just `UserPromptSubmit` — `rootCwd` is
+`findProjectRoot(sessionRootCwd)`, so the walk-up runs regardless of which
+of the two `sessionRootCwd` resolution paths (direct, or the
+`findSessionRootCwd` lookback) produced the starting directory. Existing
+entries already persisted in `icon-map.json` under a pre-fix fragmented key
+aren't retroactively merged — they just become unused clutter, since no
+future event will ever produce that exact key again; harmless, but you can
+hand-edit them out if you want a tidier file (see "Repository icons"
+below).
 
 ### Click-to-focus a repo's window
 
