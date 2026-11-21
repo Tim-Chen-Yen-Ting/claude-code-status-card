@@ -775,3 +775,7 @@ Optional / cosmetic (nothing breaks if you skip these):
 
 Tip: keep the folder name space-free to avoid path-quoting headaches; use a
 spaced display name only in the README / `package.json` description.
+
+---
+
+Built by [Yen-Ting (Tim) Chen](https://tim-chen-yen-ting.github.io/) · [Portfolio](https://tim-chen-yen-ting.github.io/)
